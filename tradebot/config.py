@@ -34,6 +34,12 @@ class Settings:
     max_markets_per_scan: int = 5000
     max_combos_per_scan: int = 2000
     max_orderbooks_per_scan: int = 100
+    min_stake: float = 2.0
+    start_max_stake: float = 5.0
+    scale_fraction: float = 0.10
+    min_edge: float = 0.05
+    combos_to_evaluate: int = 40
+    max_leg_lookups: int = 200
 
     @property
     def kalshi_base_url(self) -> str:
@@ -72,4 +78,10 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         max_markets_per_scan=int(os.getenv("MAX_MARKETS_PER_SCAN", "5000")),
         max_combos_per_scan=int(os.getenv("MAX_COMBOS_PER_SCAN", "2000")),
         max_orderbooks_per_scan=int(os.getenv("MAX_ORDERBOOKS_PER_SCAN", "100")),
+        min_stake=float(os.getenv("MIN_STAKE", "2")),
+        start_max_stake=float(os.getenv("START_MAX_STAKE", "5")),
+        scale_fraction=float(os.getenv("SCALE_FRACTION", "0.10")),
+        min_edge=float(os.getenv("MIN_EDGE", "0.05")),
+        combos_to_evaluate=int(os.getenv("COMBOS_TO_EVALUATE", "40")),
+        max_leg_lookups=int(os.getenv("MAX_LEG_LOOKUPS", "200")),
     )

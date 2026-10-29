@@ -48,6 +48,24 @@ CREATE TABLE IF NOT EXISTS sports_games (
     PRIMARY KEY (league, game_id)
 );
 
+CREATE TABLE IF NOT EXISTS decisions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    made_at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    side TEXT,
+    action TEXT NOT NULL,
+    win_prob REAL,
+    price REAL,
+    edge REAL,
+    stake REAL,
+    contracts INTEGER,
+    dry_run INTEGER NOT NULL,
+    reason TEXT,
+    raw TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_decisions_time ON decisions (made_at);
+
 CREATE TABLE IF NOT EXISTS run_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at TEXT NOT NULL,
@@ -134,6 +152,47 @@ class Store:
                 "UPDATE run_log SET finished_at = ?, summary = ? WHERE id = ?",
                 (utcnow(), json.dumps(summary), run_id),
             )
+
+    def add_decision(self, d: dict) -> None:
+        row = {
+            "side": None, "win_prob": None, "price": None, "edge": None, "stake": None,
+            "contracts": None, "reason": None, "raw": None, **d,
+        }
+        row["raw"] = json.dumps(row["raw"]) if row["raw"] is not None else None
+        with self.conn:
+            self.conn.execute(
+                """INSERT INTO decisions (made_at, kind, ticker, side, action, win_prob, price,
+                       edge, stake, contracts, dry_run, reason, raw)
+                   VALUES (:made_at, :kind, :ticker, :side, :action, :win_prob, :price,
+                       :edge, :stake, :contracts, :dry_run, :reason, :raw)""",
+                {"made_at": utcnow(), **row, "dry_run": int(row["dry_run"])},
+            )
+
+    def decisions_since(self, since_iso: str) -> list[sqlite3.Row]:
+        return self.conn.execute(
+            "SELECT * FROM decisions WHERE made_at >= ? ORDER BY made_at", (since_iso,)
+        ).fetchall()
+
+    def recent_decision(self, ticker: str, action: str, since_iso: str) -> bool:
+        return (
+            self.conn.execute(
+                "SELECT 1 FROM decisions WHERE ticker = ? AND action = ? AND made_at >= ? LIMIT 1",
+                (ticker, action, since_iso),
+            ).fetchone()
+            is not None
+        )
+
+    def get_market_raw(self, ticker: str) -> dict | None:
+        row = self.conn.execute("SELECT raw FROM markets WHERE ticker = ?", (ticker,)).fetchone()
+        return json.loads(row[0]) if row else None
+
+    def combo_markets(self, limit: int) -> list[dict]:
+        rows = self.conn.execute(
+            "SELECT raw FROM markets WHERE is_combo = 1 AND status IN ('open', 'active') "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [json.loads(r[0]) for r in rows]
 
     def count(self, table: str) -> int:
         return self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]

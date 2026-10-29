@@ -4,7 +4,7 @@ An automated trading bot for prediction markets (Kalshi first), with multi-leg
 sports combos as the top priority and other categories scanned for
 positive-expected-value trades.
 
-**Status: step 1 of 4 (data collection only). This code places no orders.**
+**Status: Phase 3 (betting logic in dry run). This code places no orders.**
 
 ## Plan
 
@@ -46,6 +46,27 @@ bash setup_droplet.sh https://github.com/useplotwise/bettyjohnsonup.git
 If the repo is private, clone it with a deploy key or personal access token
 instead. Then follow the printed instructions to add your key and start the
 service. Check it with `journalctl -u tradebot -f`.
+
+## Betting logic (dry run)
+
+Each cycle the bot:
+
+1. Prices up to `COMBOS_TO_EVALUATE` combos that have an asking price. A combo's
+   fair chance is the product of its legs' market prices (settled legs count as
+   certain). Edge is expected profit per $1 after Kalshi's fee.
+2. Sizes any combo with edge of at least `MIN_EDGE` (see `tradebot/bankroll.py`):
+   $2 to $5 to start, growing with lifetime profit up to $20; more only with an
+   85%+ win chance and at most half the profit buffer; over $500 needs approval.
+3. Checks open positions for cash-outs (selling at the bid) when selling beats
+   holding, or locks in 3x the stake while the remaining legs are likely to miss.
+4. Records every decision in the `decisions` table and rewrites today's
+   scorecard at `logs/scorecard-YYYY-MM-DD.md`.
+
+Read today's scorecard on the server:
+
+```bash
+cat /home/tradebot/bettyjohnsonup/logs/scorecard-$(date -u +%F).md
+```
 
 ## Notes
 
