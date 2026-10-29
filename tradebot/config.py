@@ -31,6 +31,8 @@ class Settings:
     high_confidence_prob: float = 0.85
     manual_approval_above: float = 500.0
     sports_leagues: tuple[str, ...] = field(default_factory=tuple)
+    max_markets_per_scan: int = 5000
+    max_orderbooks_per_scan: int = 100
 
     @property
     def kalshi_base_url(self) -> str:
@@ -66,4 +68,6 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         high_confidence_prob=float(os.getenv("HIGH_CONFIDENCE_PROB", "0.85")),
         manual_approval_above=float(os.getenv("MANUAL_APPROVAL_ABOVE", "500")),
         sports_leagues=leagues,
+        max_markets_per_scan=int(os.getenv("MAX_MARKETS_PER_SCAN", "5000")),
+        max_orderbooks_per_scan=int(os.getenv("MAX_ORDERBOOKS_PER_SCAN", "100")),
     )
