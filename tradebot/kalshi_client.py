@@ -158,8 +158,27 @@ class KalshiClient:
         )
         return data["id"]
 
+    def get_communications_id(self) -> str:
+        if not getattr(self, "_communications_id", None):
+            data = self.request("GET", "/communications/id", signed=True)
+            self._communications_id = data["communications_id"]
+        return self._communications_id
+
     def get_rfq_quotes(self, rfq_id: str) -> list[dict]:
-        data = self.request("GET", "/communications/quotes", params={"rfq_id": rfq_id}, signed=True)
+        """Quotes replying to one of our RFQs.
+
+        Kalshi rejects an unfiltered lookup with 403 "Either creator_user_id or
+        rfq_creator_user_id must be filled", so filter to our own RFQs, falling
+        back to the older rfq_creator_user_id parameter if the filter is refused.
+        """
+        params = {"rfq_id": rfq_id, "rfq_user_filter": "self"}
+        try:
+            data = self.request("GET", "/communications/quotes", params=params, signed=True)
+        except KalshiError as exc:
+            if "-> 403" not in str(exc):
+                raise
+            params = {"rfq_id": rfq_id, "rfq_creator_user_id": self.get_communications_id()}
+            data = self.request("GET", "/communications/quotes", params=params, signed=True)
         return data.get("quotes", [])
 
     def delete_rfq(self, rfq_id: str) -> None:

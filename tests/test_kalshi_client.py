@@ -91,3 +91,23 @@ def test_orderbook_unknown_shape_raises():
     client = KalshiClient("https://demo-api.kalshi.co/trade-api/v2", session=session)
     with pytest.raises(KalshiError):
         client.get_orderbook("T")
+
+
+def test_rfq_quotes_filter_to_own_rfqs(key):
+    session = FakeSession([FakeResponse(200, {"quotes": [{"id": "q"}]})])
+    client = KalshiClient("https://demo-api.kalshi.co/trade-api/v2", "k", key, session=session)
+    assert client.get_rfq_quotes("r1") == [{"id": "q"}]
+    assert session.calls[0]["params"] == {"rfq_id": "r1", "rfq_user_filter": "self"}
+
+
+def test_rfq_quotes_fall_back_to_creator_id(key):
+    session = FakeSession(
+        [
+            FakeResponse(403, {"error": {"code": "Either_creator_user_id_or_rfq_creator_user_id_must_be_filled."}}),
+            FakeResponse(200, {"communications_id": "me123"}),
+            FakeResponse(200, {"quotes": []}),
+        ]
+    )
+    client = KalshiClient("https://demo-api.kalshi.co/trade-api/v2", "k", key, session=session)
+    assert client.get_rfq_quotes("r1") == []
+    assert session.calls[2]["params"] == {"rfq_id": "r1", "rfq_creator_user_id": "me123"}
