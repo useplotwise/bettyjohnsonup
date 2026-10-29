@@ -4,7 +4,28 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .paper import paper_summary
 from .storage import Store
+
+
+def _pct(value: float | None) -> str:
+    return "n/a" if value is None else f"{value:.0%}"
+
+
+def _paper_lines(store: Store) -> list[str]:
+    picks, watch = paper_summary(store, "pick"), paper_summary(store, "watch")
+    return [
+        "## Paper trading (pretend bets, all time)",
+        "",
+        f"- Bot's picks: {picks['open']} waiting, {picks['settled']} finished, {picks['won']} won. "
+        f"Pretend profit/loss: ${picks['pnl']:+.2f} on ${picks['staked']:.2f} staked.",
+        f"- Every quoted combo (1 contract each, picked or not): {watch['open']} waiting, "
+        f"{watch['settled']} finished, {watch['won']} won. Pretend profit/loss: ${watch['pnl']:+.2f}.",
+        f"- How good are the bot's chances? It expected to win {_pct(picks['expected_win_rate'])} of its "
+        f"picks and actually won {_pct(picks['actual_win_rate'])}. On all quoted combos it expected "
+        f"{_pct(watch['expected_win_rate'])} and they won {_pct(watch['actual_win_rate'])}.",
+        "",
+    ]
 
 
 def write_scorecard(store: Store, log_dir: Path, balance: float | None, dry_run: bool) -> Path:
@@ -43,6 +64,7 @@ def write_scorecard(store: Store, log_dir: Path, balance: float | None, dry_run:
                 f"{r['win_prob']:.1%} | {r['edge']:.0%} | ${r['stake']:.2f} |"
             )
         lines.append("")
+    lines += _paper_lines(store)
     lines.append(
         "Fair chance multiplies each leg's market price and assumes the legs are "
         "independent. Legs from the same game often aren't, so treat it as an estimate."

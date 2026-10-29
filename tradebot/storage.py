@@ -66,6 +66,25 @@ CREATE TABLE IF NOT EXISTS decisions (
 );
 CREATE INDEX IF NOT EXISTS idx_decisions_time ON decisions (made_at);
 
+CREATE TABLE IF NOT EXISTS paper_bets (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    opened_at TEXT NOT NULL,
+    kind TEXT NOT NULL,
+    ticker TEXT NOT NULL,
+    side TEXT NOT NULL,
+    price REAL NOT NULL,
+    contracts INTEGER NOT NULL,
+    fee REAL NOT NULL,
+    win_prob REAL,
+    edge REAL,
+    status TEXT NOT NULL DEFAULT 'open',
+    pnl REAL,
+    checked_at TEXT,
+    settled_at TEXT,
+    raw TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_paper_status ON paper_bets (status, checked_at);
+
 CREATE TABLE IF NOT EXISTS run_log (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     started_at TEXT NOT NULL,

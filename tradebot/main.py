@@ -17,6 +17,7 @@ from .collectors.markets import collect_markets, collect_orderbooks
 from .collectors.sports import fetch_scoreboard
 from .config import Settings, load_settings
 from .kalshi_client import KalshiClient, load_private_key
+from .paper import settle_paper_bets
 from .scorecard import write_scorecard
 from .storage import Store
 from .strategy.runner import check_cash_outs, evaluate_combos
@@ -91,6 +92,7 @@ def run_cycle(settings: Settings, client: KalshiClient, store: Store) -> dict:
     for name, step in (
         ("combo_picks", lambda: evaluate_combos(settings, client, store, balance, lifetime_profit)),
         ("cashouts", lambda: check_cash_outs(settings, client, store)),
+        ("paper", lambda: settle_paper_bets(client, store)),
     ):
         try:
             summary[name] = step()
