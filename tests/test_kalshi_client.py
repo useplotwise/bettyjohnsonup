@@ -78,3 +78,16 @@ def test_error_status_raises(monkeypatch):
     client = KalshiClient("https://demo-api.kalshi.co/trade-api/v2", session=session)
     with pytest.raises(KalshiError):
         client.get_market("MISSING")
+
+
+def test_orderbook_accepts_fixed_point_key():
+    session = FakeSession([FakeResponse(200, {"orderbook_fp": {"yes_dollars": []}})])
+    client = KalshiClient("https://demo-api.kalshi.co/trade-api/v2", session=session)
+    assert client.get_orderbook("T") == {"yes_dollars": []}
+
+
+def test_orderbook_unknown_shape_raises():
+    session = FakeSession([FakeResponse(200, {"something": {}})])
+    client = KalshiClient("https://demo-api.kalshi.co/trade-api/v2", session=session)
+    with pytest.raises(KalshiError):
+        client.get_orderbook("T")

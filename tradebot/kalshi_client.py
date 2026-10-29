@@ -122,9 +122,12 @@ class KalshiClient:
         return self.request("GET", f"/markets/{ticker}")["market"]
 
     def get_orderbook(self, ticker: str, depth: int | None = None) -> dict:
-        return self.request("GET", f"/markets/{ticker}/orderbook", params={"depth": depth})[
-            "orderbook"
-        ]
+        data = self.request("GET", f"/markets/{ticker}/orderbook", params={"depth": depth})
+        # Older responses use "orderbook" (cents); newer ones "orderbook_fp" (dollar strings).
+        book = data.get("orderbook") or data.get("orderbook_fp")
+        if book is None:
+            raise KalshiError(f"unexpected orderbook response, keys: {sorted(data)}")
+        return book
 
     # -- account (signed) --------------------------------------------------
 
