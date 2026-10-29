@@ -1,0 +1,16 @@
+[Unit]
+Description=Prediction-market trading bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=tradebot
+WorkingDirectory=/home/tradebot/bettyjohnsonup
+EnvironmentFile=/home/tradebot/bettyjohnsonup/.env
+ExecStart=/home/tradebot/bettyjohnsonup/.venv/bin/python -m tradebot.main
+Restart=always
+RestartSec=30
+
+[Install]
+WantedBy=multi-user.target
