@@ -24,6 +24,8 @@ def write_scorecard(store: Store, log_dir: Path, balance: float | None, dry_run:
         f"- Scan cycles today: {cycles}",
         f"- Bets the bot would place: {counts['would_buy']} "
         f"(total ${sum(r['stake'] or 0 for r in buys):.2f})",
+        f"- Combo prices requested from market makers: {counts['price_check']} "
+        f"({sum(1 for r in rows if r['action'] == 'price_check' and r['price'])} got a quote)",
         f"- Waiting for your approval (over $500): {counts['needs_approval']}",
         f"- Cash-outs it would make: {counts['would_sell']}",
         "",

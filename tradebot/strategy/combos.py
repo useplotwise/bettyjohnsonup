@@ -28,6 +28,11 @@ class ComboEvaluation:
         return None if not self.ask else 1 / self.ask
 
 
+def edge_at(fair_prob: float, ask: float) -> float:
+    """Expected profit per $1 staked when buying YES at `ask`, after Kalshi's fee."""
+    return (fair_prob - ask - kalshi_fee(ask)) / ask
+
+
 def combo_legs(market: dict) -> list[tuple[str, str]]:
     """Return [(leg_market_ticker, side)] for a combo market."""
     selected = market.get("mve_selected_legs")
@@ -58,9 +63,7 @@ def evaluate_combo(market: dict, get_leg: Callable[[str], dict | None]) -> Combo
         fair *= p_yes if side == "yes" else 1 - p_yes
     fair_prob = None if missing or not legs else fair
     ask = q["yes_ask"]
-    edge = None
-    if fair_prob is not None and ask:
-        edge = (fair_prob - ask - kalshi_fee(ask)) / ask
+    edge = edge_at(fair_prob, ask) if fair_prob is not None and ask else None
     return ComboEvaluation(
         ticker=market["ticker"],
         legs=legs,

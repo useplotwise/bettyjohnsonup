@@ -40,6 +40,7 @@ class Settings:
     min_edge: float = 0.05
     combos_to_evaluate: int = 40
     max_leg_lookups: int = 200
+    rfq_checks_per_cycle: int = 1
 
     @property
     def kalshi_base_url(self) -> str:
@@ -84,4 +85,5 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         min_edge=float(os.getenv("MIN_EDGE", "0.05")),
         combos_to_evaluate=int(os.getenv("COMBOS_TO_EVALUATE", "40")),
         max_leg_lookups=int(os.getenv("MAX_LEG_LOOKUPS", "200")),
+        rfq_checks_per_cycle=int(os.getenv("RFQ_CHECKS_PER_CYCLE", "1")),
     )

@@ -139,3 +139,28 @@ class KalshiClient:
 
     def get_fills(self, **params) -> dict:
         return self.request("GET", "/portfolio/fills", params=params, signed=True)
+
+    # -- request for quote (signed) -----------------------------------------
+    # Combo markets have no resting orders; prices come from market makers'
+    # quotes in reply to an RFQ. Creating or deleting an RFQ moves no money.
+
+    def create_rfq(self, market_ticker: str, target_cost_dollars: float) -> str:
+        data = self.request(
+            "POST",
+            "/communications/rfqs",
+            json={
+                "market_ticker": market_ticker,
+                "target_cost_dollars": f"{target_cost_dollars:.2f}",
+                "rest_remainder": False,
+                "obscure_creator_id": True,
+            },
+            signed=True,
+        )
+        return data["id"]
+
+    def get_rfq_quotes(self, rfq_id: str) -> list[dict]:
+        data = self.request("GET", "/communications/quotes", params={"rfq_id": rfq_id}, signed=True)
+        return data.get("quotes", [])
+
+    def delete_rfq(self, rfq_id: str) -> None:
+        self.request("DELETE", f"/communications/rfqs/{rfq_id}", signed=True)

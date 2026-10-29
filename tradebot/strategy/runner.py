@@ -13,7 +13,8 @@ from ..kalshi_client import KalshiClient, KalshiError
 from ..pricing import implied_yes_prob, quotes
 from ..storage import Store
 from .cashout import should_cash_out
-from .combos import combo_legs, evaluate_combo
+from .combos import combo_legs, edge_at, evaluate_combo
+from .quotes import request_combo_price
 
 log = logging.getLogger(__name__)
 
@@ -65,16 +66,58 @@ def evaluate_combos(
     rules = bankroll_rules(settings)
     lookup = LegLookup(client, store, settings.max_leg_lookups)
     day_ago = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="seconds")
-    stats = {"combos_evaluated": 0, "combos_priced": 0, "would_buy": 0, "needs_approval": 0}
+    stats = {"combos_evaluated": 0, "combos_priced": 0, "price_checks": 0, "quotes_received": 0,
+             "would_buy": 0, "needs_approval": 0}
 
-    candidates = [m for m in store.combo_markets(settings.combos_to_evaluate * 5) if quotes(m)["yes_ask"]]
-    for market in candidates[: settings.combos_to_evaluate]:
+    # 1. Fair value for each combo from its legs.
+    evaluated = []
+    for market in store.combo_markets(settings.combos_to_evaluate):
         ev = evaluate_combo(market, lookup)
         stats["combos_evaluated"] += 1
-        if ev.edge is None:
+        if ev.fair_prob is not None and ev.legs_settled < len(ev.legs):
+            stats["combos_priced"] += 1
+            evaluated.append(ev)
+
+    # 2. Combos have no listed price, so ask market makers for a few quotes.
+    can_check = settings.has_credentials and settings.rfq_checks_per_cycle > 0
+    for ev in sorted(evaluated, key=lambda e: -e.fair_prob):
+        if ev.ask is not None:
             continue
-        stats["combos_priced"] += 1
-        if ev.edge < settings.min_edge:
+        if not can_check or stats["price_checks"] >= settings.rfq_checks_per_cycle:
+            break
+        if store.recent_decision(ev.ticker, "price_check", day_ago):
+            continue
+        stats["price_checks"] += 1
+        try:
+            best = request_combo_price(client, ev.ticker, settings.start_max_stake)
+        except KalshiError as exc:
+            log.warning("price check %s: %s", ev.ticker, exc)
+            continue
+        ev.ask = best[0] if best else None
+        ev.edge = edge_at(ev.fair_prob, ev.ask) if ev.ask else None
+        stats["quotes_received"] += int(best is not None)
+        store.add_decision(
+            {
+                "kind": "combo",
+                "ticker": ev.ticker,
+                "side": "yes",
+                "action": "price_check",
+                "win_prob": ev.fair_prob,
+                "price": ev.ask,
+                "edge": ev.edge,
+                "dry_run": settings.dry_run,
+                "reason": "no quotes" if best is None else f"best quote of {len(ev.legs)}-leg combo",
+                "raw": {"legs": ev.legs, "quote": best[1] if best else None},
+            }
+        )
+        log.info(
+            "price check %s: fair %.2f%%, best quote %s",
+            ev.ticker, ev.fair_prob * 100, "none" if ev.ask is None else f"{ev.ask * 100:.2f}%",
+        )
+
+    # 3. Size anything with enough edge.
+    for ev in evaluated:
+        if ev.edge is None or ev.edge < settings.min_edge:
             continue
         stake = size_bet(rules, ev.fair_prob, ev.edge, lifetime_profit, balance)
         if stake.amount <= 0:

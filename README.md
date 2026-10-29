@@ -51,9 +51,12 @@ service. Check it with `journalctl -u tradebot -f`.
 
 Each cycle the bot:
 
-1. Prices up to `COMBOS_TO_EVALUATE` combos that have an asking price. A combo's
-   fair chance is the product of its legs' market prices (settled legs count as
-   certain). Edge is expected profit per $1 after Kalshi's fee.
+1. Prices up to `COMBOS_TO_EVALUATE` combos. A combo's fair chance is the
+   product of its legs' market prices (settled legs count as certain). Combos
+   have no listed price, so for `RFQ_CHECKS_PER_CYCLE` of them the bot sends a
+   request for quote, reads market makers' replies for 10 seconds and withdraws
+   the request without accepting (no money moves). Edge is expected profit per
+   $1 at the best quote, after Kalshi's fee.
 2. Sizes any combo with edge of at least `MIN_EDGE` (see `tradebot/bankroll.py`):
    $2 to $5 to start, growing with lifetime profit up to $20; more only with an
    85%+ win chance and at most half the profit buffer; over $500 needs approval.
