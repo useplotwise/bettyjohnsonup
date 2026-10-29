@@ -3,7 +3,7 @@
     python -m tradebot.main --once      # single cycle, then exit
     python -m tradebot.main             # loop every LOOP_INTERVAL_MINUTES
 
-Step 1 only collects data. No orders are placed by this code.
+No orders are placed by this code yet; order placement arrives in Phase 4.
 """
 
 import argparse
@@ -17,7 +17,9 @@ from .collectors.markets import collect_markets, collect_orderbooks
 from .collectors.sports import fetch_scoreboard
 from .config import Settings, load_settings
 from .kalshi_client import KalshiClient, load_private_key
+from .scorecard import write_scorecard
 from .storage import Store
+from .strategy.runner import check_cash_outs, evaluate_combos
 
 log = logging.getLogger("tradebot")
 
@@ -75,11 +77,32 @@ def run_cycle(settings: Settings, client: KalshiClient, store: Store) -> dict:
             summary["errors"].append(f"sports {league}: {exc}")
     summary["games"] = games
 
+    balance = None
     if settings.has_credentials:
         try:
             summary["balance"] = client.get_balance().get("balance")
+            balance = summary["balance"] / 100 if summary["balance"] is not None else None
         except Exception as exc:
             summary["errors"].append(f"balance: {exc}")
+
+    # Lifetime profit tracking starts with live trading (Phase 4); until then
+    # sizing stays at the $2 to $5 starting range.
+    lifetime_profit = 0.0
+    for name, step in (
+        ("combo_picks", lambda: evaluate_combos(settings, client, store, balance, lifetime_profit)),
+        ("cashouts", lambda: check_cash_outs(settings, client, store)),
+    ):
+        try:
+            summary[name] = step()
+        except Exception as exc:
+            log.exception("%s step failed", name)
+            summary["errors"].append(f"{name}: {exc}")
+
+    try:
+        summary["scorecard"] = str(write_scorecard(store, settings.log_dir, balance, settings.dry_run))
+    except Exception as exc:
+        log.exception("scorecard failed")
+        summary["errors"].append(f"scorecard: {exc}")
 
     store.finish_run(run_id, summary)
     log.info("cycle done: %s", summary)
@@ -94,7 +117,7 @@ def main() -> None:
     settings = load_settings()
     setup_logging(settings)
     if not settings.dry_run:
-        log.warning("DRY_RUN is off, but step 1 has no order placement; nothing will trade.")
+        log.warning("DRY_RUN is off, but order placement arrives in Phase 4; nothing will trade.")
     client = build_client(settings)
     store = Store(settings.db_path)
 
