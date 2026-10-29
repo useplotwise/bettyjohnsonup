@@ -57,7 +57,10 @@ def collect_markets(client: KalshiClient, store: Store, max_markets: int | None 
     rows = []
     for m in client.iter_markets(status="open"):
         rows.append(normalize_market(m))
+        if len(rows) % 1000 == 0:
+            log.info("read %d markets so far...", len(rows))
         if max_markets and len(rows) >= max_markets:
+            log.info("reached the %d-market limit for this scan", max_markets)
             break
     store.upsert_markets(rows)
     log.info("stored %d open markets (%d combos)", len(rows), sum(r["is_combo"] for r in rows))
@@ -69,7 +72,11 @@ def collect_orderbooks(
 ) -> int:
     """Snapshot order books, skipping any market whose book fails to load."""
     taken = 0
-    for ticker in tickers[:max_books]:
+    batch = tickers[:max_books]
+    log.info("reading %d order books...", len(batch))
+    for i, ticker in enumerate(batch, 1):
+        if i % 25 == 0:
+            log.info("order books: %d of %d", i, len(batch))
         try:
             book = client.get_orderbook(ticker)
         except KalshiError as exc:

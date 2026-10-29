@@ -45,18 +45,22 @@ def run_cycle(settings: Settings, client: KalshiClient, store: Store) -> dict:
     run_id = store.start_run(settings.dry_run)
     summary: dict = {"env": settings.kalshi_env, "dry_run": settings.dry_run, "errors": []}
 
+    log.info("scan started (%s exchange, dry run: %s)", settings.kalshi_env, settings.dry_run)
     try:
-        markets = collect_markets(client, store)
+        markets = collect_markets(client, store, settings.max_markets_per_scan)
         summary["markets"] = len(markets)
         summary["combos"] = sum(m["is_combo"] for m in markets)
         # Combos first (priority 1), then everything else.
         tickers = [m["ticker"] for m in sorted(markets, key=lambda m: -m["is_combo"])]
-        summary["orderbooks"] = collect_orderbooks(client, store, tickers)
+        summary["orderbooks"] = collect_orderbooks(
+            client, store, tickers, settings.max_orderbooks_per_scan
+        )
     except Exception as exc:  # keep the loop alive; the next cycle retries
         log.exception("market collection failed")
         summary["errors"].append(f"markets: {exc}")
 
     games = 0
+    log.info("reading sports results for %d leagues...", len(settings.sports_leagues))
     for league in settings.sports_leagues:
         try:
             games += store.upsert_games(fetch_scoreboard(league))
@@ -88,12 +92,17 @@ def main() -> None:
     client = build_client(settings)
     store = Store(settings.db_path)
 
-    while True:
-        started = time.monotonic()
-        run_cycle(settings, client, store)
-        if args.once:
-            break
-        time.sleep(max(0.0, settings.loop_interval_minutes * 60 - (time.monotonic() - started)))
+    try:
+        while True:
+            started = time.monotonic()
+            run_cycle(settings, client, store)
+            if args.once:
+                break
+            time.sleep(max(0.0, settings.loop_interval_minutes * 60 - (time.monotonic() - started)))
+    except KeyboardInterrupt:
+        log.info("stopped by user")
+    finally:
+        store.close()
 
 
 if __name__ == "__main__":

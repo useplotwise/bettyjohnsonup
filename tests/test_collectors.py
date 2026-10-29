@@ -80,3 +80,10 @@ def test_parse_espn_scoreboard():
     assert store.upsert_games([game]) == 1
     assert store.upsert_games([game]) == 1
     assert store.count("sports_games") == 1
+
+
+def test_collect_markets_respects_limit():
+    store = Store(":memory:")
+    client = FakeClient([{"ticker": f"M{i}", "status": "open"} for i in range(10)], {})
+    assert len(collect_markets(client, store, max_markets=3)) == 3
+    assert store.count("markets") == 3
