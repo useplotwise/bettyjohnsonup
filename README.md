@@ -62,8 +62,13 @@ Each cycle the bot:
    85%+ win chance and at most half the profit buffer; over $500 needs approval.
 3. Checks open positions for cash-outs (selling at the bid) when selling beats
    holding, or locks in 3x the stake while the remaining legs are likely to miss.
-4. Records every decision in the `decisions` table and rewrites today's
-   scorecard at `logs/scorecard-YYYY-MM-DD.md`.
+4. Paper trades (`tradebot/paper.py`): every would-buy pick becomes a pretend
+   bet at its stake, and every quoted combo becomes a 1-contract "watch" bet.
+   Up to 50 open pretend bets are checked per cycle and settled against
+   Kalshi's real results, after fees.
+5. Records every decision in the `decisions` table and rewrites today's
+   scorecard at `logs/scorecard-YYYY-MM-DD.md`, including all-time paper
+   profit/loss and how often the bot's win chances came true.
 
 Read today's scorecard on the server:
 

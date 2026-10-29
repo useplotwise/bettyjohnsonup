@@ -47,6 +47,8 @@ def test_good_combo_is_recorded_once_per_day(tmp_path):
     assert stats["would_buy"] == 1
     [row] = store.decisions_since("2000-01-01")
     assert row["action"] == "would_buy" and row["stake"] == 5 and row["dry_run"] == 1
+    [bet] = store.conn.execute("SELECT * FROM paper_bets").fetchall()
+    assert bet["kind"] == "pick" and bet["price"] == 0.04 and bet["contracts"] == row["contracts"]
     assert evaluate_combos(settings, FakeClient(), store, 50, 0)["would_buy"] == 0
 
     path = write_scorecard(store, tmp_path, 50, True)
@@ -118,6 +120,8 @@ def test_unpriced_combo_gets_a_price_check(tmp_path, monkeypatch):
     assert stats["price_checks"] == 1 and stats["quotes_received"] == 1 and stats["would_buy"] == 1
     actions = sorted(r["action"] for r in store.decisions_since("2000-01-01"))
     assert actions == ["price_check", "would_buy"]
+    kinds = sorted(r[0] for r in store.conn.execute("SELECT kind FROM paper_bets"))
+    assert kinds == ["pick", "watch"]
     # Not re-checked within a day.
     assert evaluate_combos(settings, client, store, 50, 0)["price_checks"] == 0
 

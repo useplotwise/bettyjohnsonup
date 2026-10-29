@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 from ..bankroll import BankrollRules, contracts_for, size_bet
 from ..config import Settings
 from ..kalshi_client import KalshiClient, KalshiError
+from ..paper import open_paper_bet
 from ..pricing import implied_yes_prob, quotes
 from ..storage import Store
 from .cashout import should_cash_out
@@ -100,6 +101,9 @@ def evaluate_combos(
         ev.ask = best[0] if best else None
         ev.edge = edge_at(ev.fair_prob, ev.ask) if ev.ask else None
         stats["quotes_received"] += int(best is not None)
+        if ev.ask is not None and settings.dry_run:
+            open_paper_bet(store, "watch", ev.ticker, "yes", ev.ask, 1, ev.fair_prob, ev.edge,
+                           {"legs": ev.legs})
         store.add_decision(
             {
                 "kind": "combo",
@@ -131,6 +135,10 @@ def evaluate_combos(
         if store.recent_decision(ev.ticker, action, day_ago):
             continue
         stats[action] += 1
+        contracts = contracts_for(stake.amount, ev.ask)
+        if action == "would_buy" and settings.dry_run:
+            open_paper_bet(store, "pick", ev.ticker, "yes", ev.ask, contracts, ev.fair_prob, ev.edge,
+                           {"legs": ev.legs})
         store.add_decision(
             {
                 "kind": "combo",
@@ -141,7 +149,7 @@ def evaluate_combos(
                 "price": ev.ask,
                 "edge": ev.edge,
                 "stake": stake.amount,
-                "contracts": contracts_for(stake.amount, ev.ask),
+                "contracts": contracts,
                 "dry_run": settings.dry_run,
                 "reason": f"{len(ev.legs)} legs, pays {ev.payout_multiple:.1f}x, {stake.reason}",
                 "raw": {"legs": ev.legs, "bid": ev.bid},
