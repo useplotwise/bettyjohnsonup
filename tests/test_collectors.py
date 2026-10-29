@@ -14,7 +14,11 @@ class FakeClient:
         self.markets = markets
         self.books = books
 
-    def iter_markets(self, status="open"):
+    def iter_markets(self, status="open", mve_filter=None):
+        if mve_filter == "only":
+            return iter([m for m in self.markets if is_combo_market(m)])
+        if mve_filter == "exclude":
+            return iter([m for m in self.markets if not is_combo_market(m)])
         return iter(self.markets)
 
     def get_orderbook(self, ticker):
@@ -87,3 +91,35 @@ def test_collect_markets_respects_limit():
     client = FakeClient([{"ticker": f"M{i}", "status": "open"} for i in range(10)], {})
     assert len(collect_markets(client, store, max_markets=3)) == 3
     assert store.count("markets") == 3
+
+
+def test_orderbook_summary_dollar_format():
+    book = {"yes_dollars": [["0.4000", "10.00"], ["0.4200", "5.00"]], "no_dollars": [["0.5500", "3.00"]]}
+    snap = summarize_orderbook("T", book)
+    assert (snap["best_yes_bid"], snap["yes_ask"]) == (42, 45)
+    assert (snap["yes_depth"], snap["no_depth"]) == (15, 3)
+
+
+def test_collect_markets_reads_combos_and_regular_separately():
+    store = Store(":memory:")
+    markets = [{"ticker": f"KXMVE-{i}", "status": "open"} for i in range(5)]
+    markets += [{"ticker": f"KXHIGH-{i}", "status": "open"} for i in range(5)]
+    rows = collect_markets(FakeClient(markets, {}), store, max_markets=3, max_combos=2)
+    assert sum(r["is_combo"] for r in rows) == 2
+    assert sum(not r["is_combo"] for r in rows) == 3
+
+
+class RejectsFilterClient(FakeClient):
+    def iter_markets(self, status="open", mve_filter=None):
+        if mve_filter:
+            def boom():
+                raise KalshiError("400 bad param")
+                yield
+            return boom()
+        return iter(self.markets)
+
+
+def test_collect_markets_falls_back_without_filter():
+    store = Store(":memory:")
+    client = RejectsFilterClient([{"ticker": "A", "status": "open"}], {})
+    assert len(collect_markets(client, store)) == 1

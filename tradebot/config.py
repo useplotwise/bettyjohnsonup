@@ -32,6 +32,7 @@ class Settings:
     manual_approval_above: float = 500.0
     sports_leagues: tuple[str, ...] = field(default_factory=tuple)
     max_markets_per_scan: int = 5000
+    max_combos_per_scan: int = 2000
     max_orderbooks_per_scan: int = 100
 
     @property
@@ -69,5 +70,6 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         manual_approval_above=float(os.getenv("MANUAL_APPROVAL_ABOVE", "500")),
         sports_leagues=leagues,
         max_markets_per_scan=int(os.getenv("MAX_MARKETS_PER_SCAN", "5000")),
+        max_combos_per_scan=int(os.getenv("MAX_COMBOS_PER_SCAN", "2000")),
         max_orderbooks_per_scan=int(os.getenv("MAX_ORDERBOOKS_PER_SCAN", "100")),
     )

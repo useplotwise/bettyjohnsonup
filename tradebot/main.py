@@ -47,11 +47,17 @@ def run_cycle(settings: Settings, client: KalshiClient, store: Store) -> dict:
 
     log.info("scan started (%s exchange, dry run: %s)", settings.kalshi_env, settings.dry_run)
     try:
-        markets = collect_markets(client, store, settings.max_markets_per_scan)
+        markets = collect_markets(
+            client, store, settings.max_markets_per_scan, settings.max_combos_per_scan
+        )
         summary["markets"] = len(markets)
         summary["combos"] = sum(m["is_combo"] for m in markets)
-        # Combos first (priority 1), then everything else.
-        tickers = [m["ticker"] for m in sorted(markets, key=lambda m: -m["is_combo"])]
+        # Split order book reads between combos (priority 1) and everything else.
+        half = settings.max_orderbooks_per_scan // 2
+        combo_tickers = [m["ticker"] for m in markets if m["is_combo"]]
+        other_tickers = [m["ticker"] for m in markets if not m["is_combo"]]
+        tickers = combo_tickers[:half] + other_tickers
+        tickers += combo_tickers[half:]
         summary["orderbooks"] = collect_orderbooks(
             client, store, tickers, settings.max_orderbooks_per_scan
         )
