@@ -1,6 +1,7 @@
 from dataclasses import replace
 
 from tradebot.config import Settings
+from tradebot.kalshi_client import KalshiError
 from tradebot.scorecard import write_scorecard
 from tradebot.storage import Store
 from tradebot.strategy.runner import check_cash_outs, evaluate_combos
@@ -126,3 +127,26 @@ def test_no_price_checks_without_credentials(tmp_path):
     client = QuotingClient([])
     stats = evaluate_combos(Settings(log_dir=tmp_path), client, store, 50, 0)
     assert client.rfqs == [] and stats["combos_priced"] == 1
+
+
+class BusyThenQuotingClient(QuotingClient):
+    def create_rfq(self, ticker, target_cost):
+        if not self.rfqs:
+            self.rfqs.append(ticker)
+            raise KalshiError("POST /communications/rfqs -> 409: already exists")
+        return super().create_rfq(ticker, target_cost)
+
+
+def test_busy_combo_is_skipped_without_using_the_check(tmp_path, monkeypatch):
+    monkeypatch.setattr("tradebot.strategy.quotes.time.sleep", lambda s: None)
+    store = _store_with(UNPRICED)
+    second = {**UNPRICED, "ticker": "KXMVE-SECOND"}
+    store.upsert_markets(
+        [{"ticker": second["ticker"], "event_ticker": None, "series_ticker": None, "category": None,
+          "title": None, "status": "active", "is_combo": 1, "close_time": None, "result": None,
+          "raw": second}]
+    )
+    settings = Settings(log_dir=tmp_path, kalshi_api_key_id="k", kalshi_private_key_path="p")
+    client = BusyThenQuotingClient([{"status": "open", "yes_bid_dollars": "0.0400", "no_bid_dollars": "0"}])
+    stats = evaluate_combos(settings, client, store, balance=50, lifetime_profit=0)
+    assert len(client.rfqs) == 2 and stats["price_checks"] == 1 and stats["quotes_received"] == 1
