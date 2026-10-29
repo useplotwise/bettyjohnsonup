@@ -75,3 +75,54 @@ def test_cash_out_check_records_sale(tmp_path):
     assert check_cash_outs(settings, client, store)["would_sell"] == 1
     [row] = store.decisions_since("2000-01-01")
     assert row["action"] == "would_sell" and "locks in" in row["reason"]
+
+
+UNPRICED = {**COMBO, "ticker": "KXMVE-UNPRICED", "yes_ask_dollars": None}
+
+
+class QuotingClient(FakeClient):
+    def __init__(self, quotes):
+        super().__init__()
+        self.quotes = quotes
+        self.rfqs = []
+
+    def create_rfq(self, ticker, target_cost):
+        self.rfqs.append(ticker)
+        return "rfq-1"
+
+    def get_rfq_quotes(self, rfq_id):
+        return self.quotes
+
+    def delete_rfq(self, rfq_id):
+        pass
+
+
+def _store_with(market):
+    store = Store(":memory:")
+    store.upsert_markets(
+        [{"ticker": market["ticker"], "event_ticker": None, "series_ticker": None, "category": None,
+          "title": None, "status": "active", "is_combo": 1, "close_time": None, "result": None,
+          "raw": market}]
+    )
+    return store
+
+
+def test_unpriced_combo_gets_a_price_check(tmp_path, monkeypatch):
+    monkeypatch.setattr("tradebot.strategy.quotes.time.sleep", lambda s: None)
+    store = _store_with(UNPRICED)
+    settings = Settings(log_dir=tmp_path, kalshi_api_key_id="k", kalshi_private_key_path="p")
+    client = QuotingClient([{"status": "open", "yes_bid_dollars": "0.0400", "no_bid_dollars": "0"}])
+    stats = evaluate_combos(settings, client, store, balance=50, lifetime_profit=0)
+    assert client.rfqs == ["KXMVE-UNPRICED"]
+    assert stats["price_checks"] == 1 and stats["quotes_received"] == 1 and stats["would_buy"] == 1
+    actions = sorted(r["action"] for r in store.decisions_since("2000-01-01"))
+    assert actions == ["price_check", "would_buy"]
+    # Not re-checked within a day.
+    assert evaluate_combos(settings, client, store, 50, 0)["price_checks"] == 0
+
+
+def test_no_price_checks_without_credentials(tmp_path):
+    store = _store_with(UNPRICED)
+    client = QuotingClient([])
+    stats = evaluate_combos(Settings(log_dir=tmp_path), client, store, 50, 0)
+    assert client.rfqs == [] and stats["combos_priced"] == 1
