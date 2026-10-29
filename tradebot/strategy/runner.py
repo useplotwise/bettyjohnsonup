@@ -87,12 +87,16 @@ def evaluate_combos(
             break
         if store.recent_decision(ev.ticker, "price_check", day_ago):
             continue
-        stats["price_checks"] += 1
         try:
             best = request_combo_price(client, ev.ticker, settings.start_max_stake)
         except KalshiError as exc:
+            # 409: a request is already open on this combo (e.g. another run of
+            # the bot); move on to the next one without using up the check.
+            if "-> 409" not in str(exc):
+                stats["price_checks"] += 1
             log.warning("price check %s: %s", ev.ticker, exc)
             continue
+        stats["price_checks"] += 1
         ev.ask = best[0] if best else None
         ev.edge = edge_at(ev.fair_prob, ev.ask) if ev.ask else None
         stats["quotes_received"] += int(best is not None)
