@@ -41,6 +41,8 @@ class Settings:
     combos_to_evaluate: int = 40
     max_leg_lookups: int = 200
     rfq_checks_per_cycle: int = 1
+    bot_bankroll: float = 0.0
+    max_live_bets_per_day: int = 5
     builds_per_cycle: int = 1
     builder_collection: str = "KXMVECROSSCATEGORY-R"
     builder_leg_counts: tuple[int, ...] = (2, 3, 4, 6, 8)
@@ -92,6 +94,8 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         combos_to_evaluate=int(os.getenv("COMBOS_TO_EVALUATE", "40")),
         max_leg_lookups=int(os.getenv("MAX_LEG_LOOKUPS", "200")),
         rfq_checks_per_cycle=int(os.getenv("RFQ_CHECKS_PER_CYCLE", "1")),
+        bot_bankroll=float(os.getenv("BOT_BANKROLL", "0")),
+        max_live_bets_per_day=int(os.getenv("MAX_LIVE_BETS_PER_DAY", "5")),
         builds_per_cycle=int(os.getenv("BUILDS_PER_CYCLE", "1")),
         builder_collection=os.getenv("BUILDER_COLLECTION", "KXMVECROSSCATEGORY-R"),
         builder_leg_counts=tuple(

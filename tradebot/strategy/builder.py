@@ -170,7 +170,7 @@ def build_combo(
             "raw": {"legs": leg_pairs, "leg_probs": [l.prob for l in legs], "quote": best[1] if best else None},
         }
     )
-    if ask is not None and settings.dry_run:
+    if ask is not None:
         open_paper_bet(store, "built", ticker, "yes", ask, 1, fair, edge, {"legs": leg_pairs})
     log.info(
         "built %d-leg combo %s: fair %.2f%%, best quote %s",

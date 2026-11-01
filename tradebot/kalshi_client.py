@@ -201,3 +201,18 @@ class KalshiClient:
 
     def delete_rfq(self, rfq_id: str) -> None:
         self.request("DELETE", f"/communications/rfqs/{rfq_id}", signed=True)
+
+    # -- buying (signed, spends real money) --------------------------------
+
+    def accept_quote(self, rfq_id: str, quote_id: str, side: str = "yes") -> None:
+        """Accept a market maker's quote. This is a real trade once the maker confirms."""
+        self.request(
+            "PUT",
+            f"/communications/rfqs/{rfq_id}/quotes/{quote_id}/accept",
+            json={"accepted_side": side},
+            signed=True,
+        )
+
+    def get_quote(self, rfq_id: str, quote_id: str) -> dict:
+        data = self.request("GET", f"/communications/rfqs/{rfq_id}/quotes/{quote_id}", signed=True)
+        return data.get("quote", data)

@@ -1,7 +1,8 @@
 """One pass of the betting logic: evaluate combos, size bets, check cash-outs.
 
 Every decision is written to the `decisions` table. This module never places
-orders; order placement arrives in Phase 4 behind DRY_RUN.
+orders itself; real bets go through tradebot/live.py, only when DRY_RUN=false
+and BOT_BANKROLL is set.
 """
 
 import logging
@@ -10,6 +11,7 @@ from datetime import datetime, timedelta, timezone
 from ..bankroll import BankrollRules, contracts_for, size_bet
 from ..config import Settings
 from ..kalshi_client import KalshiClient, KalshiError
+from ..live import live_enabled, place_live_bet
 from ..paper import open_paper_bet
 from ..pricing import implied_yes_prob, quotes
 from ..storage import Store
@@ -69,7 +71,8 @@ def evaluate_combos(
     lookup = LegLookup(client, store, settings.max_leg_lookups)
     day_ago = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="seconds")
     stats = {"combos_evaluated": 0, "combos_priced": 0, "price_checks": 0, "quotes_received": 0,
-             "combos_built": 0, "built_quoted": 0, "would_buy": 0, "needs_approval": 0}
+             "combos_built": 0, "built_quoted": 0, "would_buy": 0, "needs_approval": 0,
+             "bought": 0, "live_skipped": 0}
 
     # 1. Fair value for each combo from its legs.
     evaluated = []
@@ -102,7 +105,7 @@ def evaluate_combos(
         ev.ask = best[0] if best else None
         ev.edge = edge_at(ev.fair_prob, ev.ask) if ev.ask else None
         stats["quotes_received"] += int(best is not None)
-        if ev.ask is not None and settings.dry_run:
+        if ev.ask is not None:
             open_paper_bet(store, "watch", ev.ticker, "yes", ev.ask, 1, ev.fair_prob, ev.edge,
                            {"legs": ev.legs})
         store.add_decision(
@@ -152,7 +155,7 @@ def evaluate_combos(
             continue
         stats[action] += 1
         contracts = contracts_for(stake.amount, ev.ask)
-        if action == "would_buy" and settings.dry_run:
+        if action == "would_buy" and not live_enabled(settings):
             open_paper_bet(store, "pick", ev.ticker, "yes", ev.ask, contracts, ev.fair_prob, ev.edge,
                            {"legs": ev.legs})
         store.add_decision(
@@ -175,6 +178,13 @@ def evaluate_combos(
             "%s %s: %d legs, fair %.2f%% vs ask %.2f%%, edge %.0f%%, stake $%.2f",
             action, ev.ticker, len(ev.legs), ev.fair_prob * 100, ev.ask * 100, ev.edge * 100, stake.amount,
         )
+        if action == "would_buy" and live_enabled(settings):
+            try:
+                result = place_live_bet(settings, client, store, ev.ticker, ev.fair_prob, stake.amount, ev.legs)
+            except KalshiError as exc:
+                log.warning("LIVE bet on %s failed: %s", ev.ticker, exc)
+                result = {"status": "error"}
+            stats["bought" if result["status"] == "bought" else "live_skipped"] += 1
     stats["leg_lookups"] = lookup.api_calls
     return stats
 

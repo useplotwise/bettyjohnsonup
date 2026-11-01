@@ -3,7 +3,7 @@
     python -m tradebot.main --once      # single cycle, then exit
     python -m tradebot.main             # loop every LOOP_INTERVAL_MINUTES
 
-No orders are placed by this code yet; order placement arrives in Phase 4.
+Real bets are placed only when DRY_RUN=false and BOT_BANKROLL is above 0.
 """
 
 import argparse
@@ -17,6 +17,7 @@ from .collectors.markets import collect_markets, collect_orderbooks
 from .collectors.sports import fetch_scoreboard
 from .config import Settings, load_settings
 from .kalshi_client import KalshiClient, load_private_key
+from .live import bot_ledger, live_enabled
 from .paper import settle_paper_bets
 from .scorecard import write_scorecard
 from .storage import Store
@@ -86,9 +87,9 @@ def run_cycle(settings: Settings, client: KalshiClient, store: Store) -> dict:
         except Exception as exc:
             summary["errors"].append(f"balance: {exc}")
 
-    # Lifetime profit tracking starts with live trading (Phase 4); until then
-    # sizing stays at the $2 to $5 starting range.
-    lifetime_profit = 0.0
+    # Bet sizes grow only with the bot's own settled real-money profit; in dry
+    # run (and before any real bet settles) sizing stays at $2 to $5.
+    lifetime_profit = bot_ledger(store)["profit"] if live_enabled(settings) else 0.0
     for name, step in (
         ("combo_picks", lambda: evaluate_combos(settings, client, store, balance, lifetime_profit)),
         ("cashouts", lambda: check_cash_outs(settings, client, store)),
@@ -101,7 +102,7 @@ def run_cycle(settings: Settings, client: KalshiClient, store: Store) -> dict:
             summary["errors"].append(f"{name}: {exc}")
 
     try:
-        summary["scorecard"] = str(write_scorecard(store, settings.log_dir, balance, settings.dry_run))
+        summary["scorecard"] = str(write_scorecard(store, settings.log_dir, balance, settings.dry_run, settings))
     except Exception as exc:
         log.exception("scorecard failed")
         summary["errors"].append(f"scorecard: {exc}")
@@ -118,8 +119,10 @@ def main() -> None:
 
     settings = load_settings()
     setup_logging(settings)
-    if not settings.dry_run:
-        log.warning("DRY_RUN is off, but order placement arrives in Phase 4; nothing will trade.")
+    if live_enabled(settings):
+        log.warning("LIVE: real bets are on, using up to $%.2f of bot money.", settings.bot_bankroll)
+    elif not settings.dry_run:
+        log.warning("DRY_RUN is off but BOT_BANKROLL is 0, so nothing will trade.")
     client = build_client(settings)
     store = Store(settings.db_path)
 

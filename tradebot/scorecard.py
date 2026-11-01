@@ -5,6 +5,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
+from .live import bot_ledger, live_enabled, money_available
 from .paper import paper_summary
 from .storage import Store
 
@@ -59,7 +60,32 @@ def _built_by_legs(store: Store) -> list[str]:
     return lines + [""]
 
 
-def write_scorecard(store: Store, log_dir: Path, balance: float | None, dry_run: bool) -> Path:
+def _mode(dry_run: bool, settings) -> str:
+    if dry_run:
+        return "DRY RUN (no real bets placed)"
+    if settings is not None and not live_enabled(settings):
+        return "DRY_RUN is off but BOT_BANKROLL is 0, so no real bets are placed"
+    return "LIVE (real bets)"
+
+
+def _live_lines(store: Store, settings) -> list[str]:
+    ledger = bot_ledger(store)
+    if settings is None or (not live_enabled(settings) and not ledger["open"] and not ledger["settled"]):
+        return []
+    return [
+        "## Real bets (all time)",
+        "",
+        f"- Bot money: ${settings.bot_bankroll:.2f} to start, profit so far ${ledger['profit']:+.2f}, "
+        f"${ledger['in_open_bets']:.2f} in open bets, ${money_available(settings, store):.2f} free to bet.",
+        f"- Bets: {ledger['open']} waiting, {ledger['settled']} finished, {ledger['won']} won. "
+        f"Placed today: {ledger['bets_today']} of {settings.max_live_bets_per_day} allowed.",
+        "",
+    ]
+
+
+def write_scorecard(
+    store: Store, log_dir: Path, balance: float | None, dry_run: bool, settings=None
+) -> Path:
     today = datetime.now(timezone.utc).date().isoformat()
     rows = store.decisions_since(today)
     cycles = store.conn.execute(
@@ -71,7 +97,7 @@ def write_scorecard(store: Store, log_dir: Path, balance: float | None, dry_run:
     lines = [
         f"# Daily scorecard: {today}",
         "",
-        f"- Mode: {'DRY RUN (no real bets placed)' if dry_run else 'LIVE'}",
+        f"- Mode: {_mode(dry_run, settings)}",
         f"- Balance: {'unknown' if balance is None else f'${balance:.2f}'}",
         f"- Scan cycles today: {cycles}",
         f"- Bets the bot would place: {counts['would_buy']} "
@@ -80,8 +106,10 @@ def write_scorecard(store: Store, log_dir: Path, balance: float | None, dry_run:
         f"({sum(1 for r in rows if r['action'] == 'price_check' and r['price'])} got a quote)",
         f"- Waiting for your approval (over $500): {counts['needs_approval']}",
         f"- Cash-outs it would make: {counts['would_sell']}",
+        f"- Real bets placed today: {counts['bought']} (skipped: {counts['live_skipped']})",
         "",
     ]
+    lines += _live_lines(store, settings)
     if buys:
         lines += [
             "## Top picks today",
