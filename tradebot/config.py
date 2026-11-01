@@ -41,6 +41,12 @@ class Settings:
     combos_to_evaluate: int = 40
     max_leg_lookups: int = 200
     rfq_checks_per_cycle: int = 1
+    builds_per_cycle: int = 1
+    builder_collection: str = "KXMVECROSSCATEGORY-R"
+    builder_leg_counts: tuple[int, ...] = (2, 3, 4, 6, 8)
+    builder_min_leg_prob: float = 0.65
+    builder_max_leg_prob: float = 0.95
+    builder_max_spread: float = 0.06
 
     @property
     def kalshi_base_url(self) -> str:
@@ -86,4 +92,12 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         combos_to_evaluate=int(os.getenv("COMBOS_TO_EVALUATE", "40")),
         max_leg_lookups=int(os.getenv("MAX_LEG_LOOKUPS", "200")),
         rfq_checks_per_cycle=int(os.getenv("RFQ_CHECKS_PER_CYCLE", "1")),
+        builds_per_cycle=int(os.getenv("BUILDS_PER_CYCLE", "1")),
+        builder_collection=os.getenv("BUILDER_COLLECTION", "KXMVECROSSCATEGORY-R"),
+        builder_leg_counts=tuple(
+            int(n) for n in os.getenv("BUILDER_LEG_COUNTS", "2,3,4,6,8").split(",") if n.strip()
+        ),
+        builder_min_leg_prob=float(os.getenv("BUILDER_MIN_LEG_PROB", "0.65")),
+        builder_max_leg_prob=float(os.getenv("BUILDER_MAX_LEG_PROB", "0.95")),
+        builder_max_spread=float(os.getenv("BUILDER_MAX_SPREAD", "0.06")),
     )

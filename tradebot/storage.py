@@ -213,5 +213,14 @@ class Store:
         ).fetchall()
         return [json.loads(r[0]) for r in rows]
 
+    def leg_markets(self, limit: int = 20000) -> list[dict]:
+        """Open single (non-combo) markets, usable as combo legs."""
+        rows = self.conn.execute(
+            "SELECT raw FROM markets WHERE is_combo = 0 AND status IN ('open', 'active') "
+            "ORDER BY updated_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+        return [json.loads(r[0]) for r in rows]
+
     def count(self, table: str) -> int:
         return self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]

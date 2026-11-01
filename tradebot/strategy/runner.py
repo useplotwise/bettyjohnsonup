@@ -13,6 +13,7 @@ from ..kalshi_client import KalshiClient, KalshiError
 from ..paper import open_paper_bet
 from ..pricing import implied_yes_prob, quotes
 from ..storage import Store
+from .builder import build_combo
 from .cashout import should_cash_out
 from .combos import combo_legs, edge_at, evaluate_combo
 from .quotes import request_combo_price
@@ -68,7 +69,7 @@ def evaluate_combos(
     lookup = LegLookup(client, store, settings.max_leg_lookups)
     day_ago = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="seconds")
     stats = {"combos_evaluated": 0, "combos_priced": 0, "price_checks": 0, "quotes_received": 0,
-             "would_buy": 0, "needs_approval": 0}
+             "combos_built": 0, "built_quoted": 0, "would_buy": 0, "needs_approval": 0}
 
     # 1. Fair value for each combo from its legs.
     evaluated = []
@@ -122,6 +123,21 @@ def evaluate_combos(
             "price check %s: fair %.2f%%, best quote %s",
             ev.ticker, ev.fair_prob * 100, "none" if ev.ask is None else f"{ev.ask * 100:.2f}%",
         )
+
+    # 2b. Build our own combos from likely legs and get them priced too.
+    if settings.has_credentials:
+        for _ in range(settings.builds_per_cycle):
+            try:
+                built = build_combo(settings, client, store)
+            except Exception as exc:  # experimental: never let it stop the picks below
+                log.warning("combo builder: %s", exc)
+                break
+            if built is None:
+                break
+            stats["combos_built"] += 1
+            if built.ask is not None:
+                stats["built_quoted"] += 1
+                evaluated.append(built)
 
     # 3. Size anything with enough edge.
     for ev in evaluated:

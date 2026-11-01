@@ -144,6 +144,24 @@ class KalshiClient:
     # Combo markets have no resting orders; prices come from market makers'
     # quotes in reply to an RFQ. Creating or deleting an RFQ moves no money.
 
+    def get_collection(self, collection_ticker: str) -> dict:
+        data = self.request("GET", f"/multivariate_event_collections/{collection_ticker}")
+        return data.get("multivariate_contract") or data.get("collection") or data
+
+    def create_combo(self, collection_ticker: str, legs: list[dict]) -> str:
+        """Create (or find) the combo market for these legs; returns its ticker.
+
+        Each leg is {"event_ticker", "market_ticker", "side"}. Creating a combo
+        market costs nothing and places no order.
+        """
+        data = self.request(
+            "POST",
+            f"/multivariate_event_collections/{collection_ticker}",
+            json={"selected_markets": legs},
+            signed=True,
+        )
+        return data["market_ticker"]
+
     def create_rfq(self, market_ticker: str, target_cost_dollars: float) -> str:
         data = self.request(
             "POST",

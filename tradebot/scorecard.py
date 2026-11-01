@@ -1,5 +1,6 @@
 """Write a daily scorecard (logs/scorecard-YYYY-MM-DD.md) from the decisions table."""
 
+import json
 from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
@@ -13,7 +14,7 @@ def _pct(value: float | None) -> str:
 
 
 def _paper_lines(store: Store) -> list[str]:
-    picks, watch = paper_summary(store, "pick"), paper_summary(store, "watch")
+    picks, watch, built = (paper_summary(store, k) for k in ("pick", "watch", "built"))
     return [
         "## Paper trading (pretend bets, all time)",
         "",
@@ -24,8 +25,38 @@ def _paper_lines(store: Store) -> list[str]:
         f"- How good are the bot's chances? It expected to win {_pct(picks['expected_win_rate'])} of its "
         f"picks and actually won {_pct(picks['actual_win_rate'])}. On all quoted combos it expected "
         f"{_pct(watch['expected_win_rate'])} and they won {_pct(watch['actual_win_rate'])}.",
+        f"- Combos the bot built itself (1 contract each): {built['open']} waiting, "
+        f"{built['settled']} finished, {built['won']} won. Pretend profit/loss: ${built['pnl']:+.2f}. "
+        f"Expected to win {_pct(built['expected_win_rate'])}, actually won {_pct(built['actual_win_rate'])}.",
         "",
+    ] + _built_by_legs(store)
+
+
+def _built_by_legs(store: Store) -> list[str]:
+    rows = store.conn.execute(
+        "SELECT raw, status, win_prob, price, pnl FROM paper_bets WHERE kind = 'built'"
+    ).fetchall()
+    groups: dict[int, list] = {}
+    for r in rows:
+        legs = len((json.loads(r["raw"]) if r["raw"] else {}).get("legs", []))
+        groups.setdefault(legs, []).append(r)
+    if not groups:
+        return []
+    lines = [
+        "### Bot-built combos by number of legs",
+        "",
+        "| Legs | Built | Finished | Won | Avg fair chance | Avg price | Pretend P&L |",
+        "|---|---|---|---|---|---|---|",
     ]
+    for legs in sorted(groups):
+        g = groups[legs]
+        done = [r for r in g if r["status"] in ("won", "lost")]
+        lines.append(
+            f"| {legs} | {len(g)} | {len(done)} | {sum(r['status'] == 'won' for r in done)} | "
+            f"{sum(r['win_prob'] or 0 for r in g) / len(g):.1%} | "
+            f"${sum(r['price'] for r in g) / len(g):.2f} | ${sum(r['pnl'] or 0 for r in done):+.2f} |"
+        )
+    return lines + [""]
 
 
 def write_scorecard(store: Store, log_dir: Path, balance: float | None, dry_run: bool) -> Path:
