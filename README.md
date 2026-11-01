@@ -4,7 +4,7 @@ An automated trading bot for prediction markets (Kalshi first), with multi-leg
 sports combos as the top priority and other categories scanned for
 positive-expected-value trades.
 
-**Status: Phase 3 (betting logic in dry run). This code places no orders.**
+**Status: Phase 4 built, off by default. Real bets need DRY_RUN=false AND BOT_BANKROLL above 0.**
 
 ## Plan
 
@@ -81,6 +81,23 @@ Read today's scorecard on the server:
 ```bash
 cat /home/tradebot/bettyjohnsonup/logs/scorecard-$(date -u +%F).md
 ```
+
+## Turning on real bets
+
+Real betting is off unless both switches are set in `.env` on the server:
+
+```bash
+DRY_RUN=false
+BOT_BANKROLL=20          # dollars the bot may use; it never touches the rest of your balance
+MAX_LIVE_BETS_PER_DAY=5
+```
+
+Then `systemctl restart tradebot`. For each pick, the bot gets a fresh quote for
+the stake, accepts it only if it still clears `MIN_EDGE`, waits for the market
+maker to confirm, and records the price actually filled. Bets over $500 are
+never placed automatically. Cash-outs are still recommendations only (logged as
+`would_sell`); the bot does not sell positions yet. To stop real betting, set
+`DRY_RUN=true` and restart.
 
 ## Notes
 

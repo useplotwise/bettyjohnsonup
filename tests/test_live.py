@@ -1,0 +1,131 @@
+from dataclasses import replace
+
+from tradebot.config import Settings
+from tradebot.live import bot_ledger, live_enabled, money_available, place_live_bet
+from tradebot.paper import settle_paper_bets
+from tradebot.scorecard import write_scorecard
+from tradebot.storage import Store
+from tradebot.strategy.runner import evaluate_combos
+
+LIVE = Settings(dry_run=False, bot_bankroll=20, kalshi_api_key_id="k", kalshi_private_key_path="p",
+                builds_per_cycle=0, rfq_checks_per_cycle=0)
+NO_SLEEP = lambda s: None  # noqa: E731
+
+
+class MarketMaker:
+    """Fake Kalshi: quotes YES at `price`, confirms (or not) when accepted."""
+
+    def __init__(self, price="0.3000", confirm=True, fill_price="0.2900"):
+        self.price, self.confirm, self.fill_price = price, confirm, fill_price
+        self.accepted, self.deleted, self.rfqs = [], [], []
+
+    def create_rfq(self, ticker, target):
+        self.rfqs.append((ticker, target))
+        return "rfq1"
+
+    def get_rfq_quotes(self, rfq_id):
+        return [{"id": "q1", "status": "open", "yes_bid_dollars": self.price, "no_bid_dollars": "0"}]
+
+    def accept_quote(self, rfq_id, quote_id, side):
+        self.accepted.append((rfq_id, quote_id, side))
+
+    def get_quote(self, rfq_id, quote_id):
+        status = "executed" if self.confirm else "accepted"
+        return {"id": quote_id, "status": status, "yes_contracts_fp": "16.00"}
+
+    def delete_rfq(self, rfq_id):
+        self.deleted.append(rfq_id)
+
+    def get_fills(self, **params):
+        return {"fills": [{"side": "yes", "action": "buy", "count_fp": "16.00", "yes_price_dollars": self.fill_price}]}
+
+    def get_market(self, ticker):
+        return {"ticker": ticker, "status": "settled", "result": "yes"}
+
+
+def test_live_needs_both_switches():
+    assert not live_enabled(Settings())
+    assert not live_enabled(replace(LIVE, bot_bankroll=0))
+    assert not live_enabled(replace(LIVE, dry_run=True))
+    assert live_enabled(LIVE)
+
+
+def test_buys_at_a_good_fresh_price_and_records_the_fill():
+    store, mm = Store(":memory:"), MarketMaker()
+    result = place_live_bet(LIVE, mm, store, "KXMVE-A", 0.5, 5.0, [("L1", "yes")], sleep=NO_SLEEP)
+    assert result["status"] == "bought" and result["price"] == 0.29 and result["contracts"] == 16
+    assert mm.accepted == [("rfq1", "q1", "yes")] and mm.rfqs == [("KXMVE-A", 5.0)] and mm.deleted
+    ledger = bot_ledger(store)
+    assert ledger["open"] == 1 and ledger["bets_today"] == 1
+    assert money_available(LIVE, store) == round(20 - (16 * 0.29 + 0.24), 2)
+    [d] = store.decisions_since("2000-01-01")
+    assert d["action"] == "bought" and d["dry_run"] == 0
+
+    settle_paper_bets(mm, store)
+    assert bot_ledger(store)["profit"] == round(16 - 16 * 0.29 - 0.24, 2)
+
+
+def test_no_trade_when_fresh_price_has_no_edge():
+    store, mm = Store(":memory:"), MarketMaker(price="0.4900")
+    result = place_live_bet(LIVE, mm, store, "KXMVE-A", 0.5, 5.0, sleep=NO_SLEEP)
+    assert result["status"] == "skipped" and "edge" in result["reason"]
+    assert mm.accepted == [] and mm.deleted == ["rfq1"]
+    assert bot_ledger(store)["open"] == 0
+
+
+def test_unconfirmed_trade_is_not_recorded_as_a_bet():
+    store, mm = Store(":memory:"), MarketMaker(confirm=False)
+    result = place_live_bet(LIVE, mm, store, "KXMVE-A", 0.5, 5.0, sleep=NO_SLEEP)
+    assert result["status"] == "skipped" and "did not confirm" in result["reason"]
+    assert bot_ledger(store)["open"] == 0
+
+
+def test_stays_within_bot_money_and_daily_limit():
+    store, mm = Store(":memory:"), MarketMaker()
+    small = replace(LIVE, bot_bankroll=3)
+    result = place_live_bet(small, mm, store, "KXMVE-A", 0.5, 5.0, sleep=NO_SLEEP)
+    assert mm.rfqs == [("KXMVE-A", 3.0)] and result["status"] == "bought"
+    # $3 is now tied up, so nothing is left for a second bet.
+    result = place_live_bet(small, mm, store, "KXMVE-B", 0.5, 5.0, sleep=NO_SLEEP)
+    assert result["status"] == "skipped" and "minimum" in result["reason"] and len(mm.rfqs) == 1
+
+    one_a_day = replace(LIVE, max_live_bets_per_day=1)
+    result = place_live_bet(one_a_day, mm, store, "KXMVE-C", 0.5, 5.0, sleep=NO_SLEEP)
+    assert "daily limit" in result["reason"]
+
+
+def _store_with_combo():
+    combo = {"ticker": "KXMVE-GOOD", "status": "active", "yes_ask_dollars": "0.0400",
+             "custom_strike": {"Associated Markets": "A,B", "Associated Market Sides": "yes,yes"}}
+    store = Store(":memory:")
+    store.upsert_markets(
+        [{"ticker": combo["ticker"], "event_ticker": None, "series_ticker": None, "category": None,
+          "title": None, "status": "active", "is_combo": 1, "close_time": None, "result": None, "raw": combo}]
+    )
+    return store
+
+
+class RunnerClient(MarketMaker):
+    def get_market(self, ticker):
+        return {"A": {"ticker": "A", "yes_bid": 29, "yes_ask": 31},
+                "B": {"ticker": "B", "yes_bid": 19, "yes_ask": 21}}[ticker]
+
+
+def test_runner_buys_only_when_live(tmp_path, monkeypatch):
+    monkeypatch.setattr("tradebot.live.time.sleep", NO_SLEEP)
+    client = RunnerClient(price="0.0400", fill_price="0.0400")
+    stats = evaluate_combos(replace(LIVE, log_dir=tmp_path), client, _store_with_combo(), 50, 0)
+    assert stats["would_buy"] == 1 and stats["bought"] == 1
+
+    client = RunnerClient(price="0.0400")
+    stats = evaluate_combos(replace(LIVE, dry_run=True, log_dir=tmp_path), client, _store_with_combo(), 50, 0)
+    assert stats["would_buy"] == 1 and stats["bought"] == 0 and client.accepted == []
+
+
+def test_scorecard_shows_real_bets(tmp_path):
+    store = Store(":memory:")
+    place_live_bet(LIVE, MarketMaker(), store, "KXMVE-A", 0.5, 5.0, sleep=NO_SLEEP)
+    text = write_scorecard(store, tmp_path, 25.0, False, LIVE).read_text()
+    assert "LIVE (real bets)" in text and "## Real bets" in text and "Real bets placed today: 1" in text
+    text = write_scorecard(store, tmp_path, 25.0, False, replace(LIVE, bot_bankroll=0)).read_text()
+    assert "BOT_BANKROLL is 0" in text
