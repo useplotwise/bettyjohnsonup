@@ -15,11 +15,12 @@ Leg counts rotate through BUILDER_LEG_COUNTS, one per build.
 
 import logging
 import random
+import re
 from dataclasses import dataclass
 
 from ..collectors.markets import is_combo_market
 from ..config import Settings
-from ..kalshi_client import KalshiClient
+from ..kalshi_client import KalshiClient, KalshiError
 from ..paper import open_paper_bet
 from ..pricing import quotes
 from ..storage import Store
@@ -27,6 +28,26 @@ from .combos import ComboEvaluation, edge_at
 from .quotes import request_combo_price
 
 log = logging.getLogger(__name__)
+
+MAX_ATTEMPTS = 5
+# Learned from Kalshi's replies while running: markets where only YES can be a
+# leg (e.g. tennis "X wins"), and markets that can't be legs at all.
+YES_ONLY: set[str] = set()
+REJECTED: set[str] = set()
+_DETAILS = re.compile(r'"details"\s*:\s*"([^"]+)"')
+
+
+def _learn_from_rejection(exc: KalshiError, legs: list["Leg"]) -> bool:
+    """Remember which leg Kalshi refused so the next attempt avoids it."""
+    match = _DETAILS.search(str(exc))
+    ticker = match.group(1) if match else None
+    if ticker not in {l.market_ticker for l in legs}:
+        return False
+    if "Only YES" in str(exc):
+        YES_ONLY.add(ticker)
+    else:
+        REJECTED.add(ticker)
+    return True
 
 
 @dataclass(frozen=True)
@@ -104,15 +125,29 @@ def build_combo(
         store.leg_markets(), eligible, settings.builder_min_leg_prob,
         settings.builder_max_leg_prob, settings.builder_max_spread, yes_only,
     )
-    legs = choose_legs(candidates, count, rng)
-    if not legs:
-        log.info("combo builder: only %d usable legs, need %d", len(candidates), count)
+    for _ in range(MAX_ATTEMPTS):
+        usable = [
+            l for l in candidates
+            if l.market_ticker not in REJECTED and not (l.side == "no" and l.market_ticker in YES_ONLY)
+        ]
+        legs = choose_legs(usable, count, rng)
+        if not legs:
+            log.info("combo builder: only %d usable legs, need %d", len(usable), count)
+            return None
+        try:
+            ticker = client.create_combo(
+                settings.builder_collection,
+                [{"event_ticker": l.event_ticker, "market_ticker": l.market_ticker, "side": l.side}
+                 for l in legs],
+            )
+            break
+        except KalshiError as exc:
+            if "-> 400" not in str(exc) or not _learn_from_rejection(exc, legs):
+                raise
+            log.info("combo builder: leg refused, trying again: %s", exc)
+    else:
+        log.info("combo builder: gave up after %d refused attempts", MAX_ATTEMPTS)
         return None
-
-    ticker = client.create_combo(
-        settings.builder_collection,
-        [{"event_ticker": l.event_ticker, "market_ticker": l.market_ticker, "side": l.side} for l in legs],
-    )
     fair = 1.0
     for leg in legs:
         fair *= leg.prob

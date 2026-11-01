@@ -112,3 +112,41 @@ def test_builder_errors_do_not_stop_the_cycle(tmp_path):
 
     stats = evaluate_combos(_settings(tmp_path, rfq_checks_per_cycle=0), Broken(), _store(), 50, 0)
     assert stats["combos_built"] == 0
+
+
+def test_refused_no_leg_is_learned_and_retried(tmp_path, monkeypatch):
+    from tradebot.kalshi_client import KalshiError
+    from tradebot.strategy import builder
+
+    monkeypatch.setattr("tradebot.strategy.quotes.time.sleep", lambda s: None)
+    monkeypatch.setattr(builder, "YES_ONLY", set())
+    monkeypatch.setattr(builder, "REJECTED", set())
+
+    class Picky(BuilderClient):
+        def create_combo(self, collection, legs):
+            for leg in legs:
+                if leg["side"] == "no":
+                    raise KalshiError(
+                        'POST /multivariate_event_collections/X -> 400: {"error":{"code":"invalid_parameters",'
+                        '"message":"Only YES can be selected on Tie.","details":"' + leg["market_ticker"] + '"}}'
+                    )
+            return super().create_combo(collection, legs)
+
+    client = Picky()
+    for seed in range(5):
+        ev = build_combo(_settings(tmp_path), client, _store(), random.Random(seed))
+        assert ev is not None
+        assert all(side == "yes" for _, side in ev.legs)
+    assert builder.YES_ONLY <= {"A-TIE"}
+
+
+def test_other_errors_are_not_retried(tmp_path):
+    import pytest
+    from tradebot.kalshi_client import KalshiError
+
+    class Down(BuilderClient):
+        def create_combo(self, collection, legs):
+            raise KalshiError("POST /multivariate_event_collections/X -> 500: oops")
+
+    with pytest.raises(KalshiError):
+        build_combo(_settings(tmp_path), Down(), _store(), random.Random(0))
