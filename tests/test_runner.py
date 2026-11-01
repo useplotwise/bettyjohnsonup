@@ -64,7 +64,7 @@ def test_edge_below_minimum_is_skipped(tmp_path):
 
 def test_cash_out_check_records_sale(tmp_path):
     store = Store(":memory:")
-    settings = Settings(log_dir=tmp_path, kalshi_api_key_id="k", kalshi_private_key_path="p")
+    settings = Settings(log_dir=tmp_path, kalshi_api_key_id="k", kalshi_private_key_path="p", builds_per_cycle=0)
     client = FakeClient(
         positions=[{"ticker": "SINGLE", "position": 10, "market_exposure": 300}],
         markets={"SINGLE": {"ticker": "SINGLE", "yes_bid": 80, "yes_ask": 82}},
@@ -113,7 +113,7 @@ def _store_with(market):
 def test_unpriced_combo_gets_a_price_check(tmp_path, monkeypatch):
     monkeypatch.setattr("tradebot.strategy.quotes.time.sleep", lambda s: None)
     store = _store_with(UNPRICED)
-    settings = Settings(log_dir=tmp_path, kalshi_api_key_id="k", kalshi_private_key_path="p")
+    settings = Settings(log_dir=tmp_path, kalshi_api_key_id="k", kalshi_private_key_path="p", builds_per_cycle=0)
     client = QuotingClient([{"status": "open", "yes_bid_dollars": "0.0400", "no_bid_dollars": "0"}])
     stats = evaluate_combos(settings, client, store, balance=50, lifetime_profit=0)
     assert client.rfqs == ["KXMVE-UNPRICED"]
@@ -150,7 +150,7 @@ def test_busy_combo_is_skipped_without_using_the_check(tmp_path, monkeypatch):
           "title": None, "status": "active", "is_combo": 1, "close_time": None, "result": None,
           "raw": second}]
     )
-    settings = Settings(log_dir=tmp_path, kalshi_api_key_id="k", kalshi_private_key_path="p")
+    settings = Settings(log_dir=tmp_path, kalshi_api_key_id="k", kalshi_private_key_path="p", builds_per_cycle=0)
     client = BusyThenQuotingClient([{"status": "open", "yes_bid_dollars": "0.0400", "no_bid_dollars": "0"}])
     stats = evaluate_combos(settings, client, store, balance=50, lifetime_profit=0)
     assert len(client.rfqs) == 2 and stats["price_checks"] == 1 and stats["quotes_received"] == 1
