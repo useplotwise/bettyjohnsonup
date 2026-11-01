@@ -49,6 +49,16 @@ class Settings:
     builder_min_leg_prob: float = 0.65
     builder_max_leg_prob: float = 0.95
     builder_max_spread: float = 0.06
+    builder_longshot_leg_counts: tuple[int, ...] = (3, 4, 5)
+    builder_longshot_min_prob: float = 0.20
+    builder_longshot_max_prob: float = 0.50
+    odds_api_key: str = ""
+    odds_sports: tuple[str, ...] = (
+        "basketball_nba", "americanfootball_nfl", "icehockey_nhl",
+        "americanfootball_ncaaf", "basketball_ncaab", "soccer_epl",
+    )
+    odds_regions: str = "eu"
+    odds_refresh_minutes: float = 720.0
 
     @property
     def kalshi_base_url(self) -> str:
@@ -104,4 +114,19 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         builder_min_leg_prob=float(os.getenv("BUILDER_MIN_LEG_PROB", "0.65")),
         builder_max_leg_prob=float(os.getenv("BUILDER_MAX_LEG_PROB", "0.95")),
         builder_max_spread=float(os.getenv("BUILDER_MAX_SPREAD", "0.06")),
+        builder_longshot_leg_counts=tuple(
+            int(n) for n in os.getenv("BUILDER_LONGSHOT_LEG_COUNTS", "3,4,5").split(",") if n.strip()
+        ),
+        builder_longshot_min_prob=float(os.getenv("BUILDER_LONGSHOT_MIN_PROB", "0.20")),
+        builder_longshot_max_prob=float(os.getenv("BUILDER_LONGSHOT_MAX_PROB", "0.50")),
+        odds_api_key=os.getenv("ODDS_API_KEY", ""),
+        odds_sports=tuple(
+            s.strip() for s in os.getenv(
+                "ODDS_SPORTS",
+                "basketball_nba,americanfootball_nfl,icehockey_nhl,americanfootball_ncaaf,"
+                "basketball_ncaab,soccer_epl",
+            ).split(",") if s.strip()
+        ),
+        odds_regions=os.getenv("ODDS_REGIONS", "eu"),
+        odds_refresh_minutes=float(os.getenv("ODDS_REFRESH_MINUTES", "720")),
     )

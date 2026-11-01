@@ -48,13 +48,18 @@ def combo_legs(market: dict) -> list[tuple[str, str]]:
     return [(t.strip(), sides[i] if i < len(sides) else "yes") for i, t in enumerate(tickers)]
 
 
-def evaluate_combo(market: dict, get_leg: Callable[[str], dict | None]) -> ComboEvaluation:
+def evaluate_combo(
+    market: dict,
+    get_leg: Callable[[str], dict | None],
+    leg_prob: Callable[[dict], float | None] = implied_yes_prob,
+) -> ComboEvaluation:
+    """Fair chance of a combo. `leg_prob` gives each leg's YES chance (Kalshi's price by default)."""
     legs = combo_legs(market)
     q = quotes(market)
     fair, settled, missing = 1.0, 0, []
     for ticker, side in legs:
         leg = get_leg(ticker)
-        p_yes = implied_yes_prob(leg) if leg else None
+        p_yes = leg_prob(leg) if leg else None
         if p_yes is None:
             missing.append(ticker)
             continue

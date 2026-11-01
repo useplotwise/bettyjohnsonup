@@ -12,6 +12,7 @@ from ..bankroll import BankrollRules, contracts_for, size_bet
 from ..config import Settings
 from ..kalshi_client import KalshiClient, KalshiError
 from ..live import live_enabled, place_live_bet
+from ..odds import BookOdds
 from ..paper import open_paper_bet
 from ..pricing import implied_yes_prob, quotes
 from ..storage import Store
@@ -65,10 +66,16 @@ def _num(d: dict, *names: str) -> float | None:
 
 
 def evaluate_combos(
-    settings: Settings, client: KalshiClient, store: Store, balance: float | None, lifetime_profit: float
+    settings: Settings,
+    client: KalshiClient,
+    store: Store,
+    balance: float | None,
+    lifetime_profit: float,
+    book: BookOdds | None = None,
 ) -> dict:
     rules = bankroll_rules(settings)
     lookup = LegLookup(client, store, settings.max_leg_lookups)
+    book = book or BookOdds([])
     day_ago = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="seconds")
     stats = {"combos_evaluated": 0, "combos_priced": 0, "price_checks": 0, "quotes_received": 0,
              "combos_built": 0, "built_quoted": 0, "would_buy": 0, "needs_approval": 0,
@@ -77,7 +84,7 @@ def evaluate_combos(
     # 1. Fair value for each combo from its legs.
     evaluated = []
     for market in store.combo_markets(settings.combos_to_evaluate):
-        ev = evaluate_combo(market, lookup)
+        ev = evaluate_combo(market, lookup, book.leg_prob)
         stats["combos_evaluated"] += 1
         if ev.fair_prob is not None and ev.legs_settled < len(ev.legs):
             stats["combos_priced"] += 1
@@ -131,7 +138,7 @@ def evaluate_combos(
     if settings.has_credentials:
         for _ in range(settings.builds_per_cycle):
             try:
-                built = build_combo(settings, client, store)
+                built = build_combo(settings, client, store, book_prob=book.yes_prob)
             except Exception as exc:  # experimental: never let it stop the picks below
                 log.warning("combo builder: %s", exc)
                 break

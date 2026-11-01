@@ -18,10 +18,12 @@ from .collectors.sports import fetch_scoreboard
 from .config import Settings, load_settings
 from .kalshi_client import KalshiClient, load_private_key
 from .live import bot_ledger, live_enabled
+from .odds import BookOdds, refresh_odds
 from .paper import settle_paper_bets
 from .scorecard import write_scorecard
 from .storage import Store
-from .strategy.runner import check_cash_outs, evaluate_combos
+from .strategy.runner import bankroll_rules, check_cash_outs, evaluate_combos
+from .strategy.value import find_value_bets
 
 log = logging.getLogger("tradebot")
 
@@ -90,8 +92,22 @@ def run_cycle(settings: Settings, client: KalshiClient, store: Store) -> dict:
     # Bet sizes grow only with the bot's own settled real-money profit; in dry
     # run (and before any real bet settles) sizing stays at $2 to $5.
     lifetime_profit = bot_ledger(store)["profit"] if live_enabled(settings) else 0.0
+    # Paper bets aren't limited by the real balance; only real bets are.
+    bet_balance = balance if live_enabled(settings) else None
+
+    try:
+        summary["odds"] = refresh_odds(
+            store, settings.odds_api_key, settings.odds_sports, settings.odds_regions,
+            settings.odds_refresh_minutes,
+        )
+    except Exception as exc:
+        log.exception("odds step failed")
+        summary["errors"].append(f"odds: {exc}")
+    book = BookOdds.from_store(store)
+
     for name, step in (
-        ("combo_picks", lambda: evaluate_combos(settings, client, store, balance, lifetime_profit)),
+        ("combo_picks", lambda: evaluate_combos(settings, client, store, bet_balance, lifetime_profit, book)),
+        ("value_bets", lambda: find_value_bets(settings, store, book, bankroll_rules(settings), lifetime_profit)),
         ("cashouts", lambda: check_cash_outs(settings, client, store)),
         ("paper", lambda: settle_paper_bets(client, store)),
     ):
@@ -100,6 +116,7 @@ def run_cycle(settings: Settings, client: KalshiClient, store: Store) -> dict:
         except Exception as exc:
             log.exception("%s step failed", name)
             summary["errors"].append(f"{name}: {exc}")
+    summary["sportsbook_matches"] = book.matched
 
     try:
         summary["scorecard"] = str(write_scorecard(store, settings.log_dir, balance, settings.dry_run, settings))
