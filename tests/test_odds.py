@@ -108,7 +108,7 @@ def test_value_bets_are_paper_traded(tmp_path):
     )
     settings = Settings(log_dir=tmp_path)
     stats = find_value_bets(settings, store, book, bankroll_rules(settings), 0)
-    assert stats == {"legs_matched": 2, "value_bets": 1}
+    assert stats == {"legs_matched": 2, "value_bets": 1, "bought": 0}
     [bet] = store.conn.execute("SELECT * FROM paper_bets").fetchall()
     assert bet["kind"] == "value" and bet["ticker"] == "LAL" and bet["side"] == "yes" and bet["price"] == 0.52
     # Not doubled up while it's open.
