@@ -1,8 +1,9 @@
 """SQLite storage for market snapshots, order books and sports results."""
 
 import json
+import logging
 import sqlite3
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
@@ -20,6 +21,7 @@ CREATE TABLE IF NOT EXISTS markets (
     raw TEXT NOT NULL,
     updated_at TEXT NOT NULL
 );
+CREATE INDEX IF NOT EXISTS idx_markets_updated ON markets (updated_at);
 
 CREATE TABLE IF NOT EXISTS orderbook_snapshots (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -33,6 +35,7 @@ CREATE TABLE IF NOT EXISTS orderbook_snapshots (
     raw TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ob_ticker_time ON orderbook_snapshots (ticker, taken_at);
+CREATE INDEX IF NOT EXISTS idx_ob_time ON orderbook_snapshots (taken_at);
 
 CREATE TABLE IF NOT EXISTS sports_games (
     game_id TEXT NOT NULL,
@@ -95,6 +98,14 @@ CREATE TABLE IF NOT EXISTS run_log (
 """
 
 
+log = logging.getLogger(__name__)
+
+# How long old records are kept before the bot deletes them (see Store.prune).
+KEEP_ORDERBOOK_DAYS = 2
+KEEP_MARKET_DAYS = 3
+KEEP_RUN_LOG_DAYS = 30
+
+
 def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -136,7 +147,9 @@ class Store:
                        yes_ask, yes_depth, no_depth, raw)
                    VALUES (:ticker, :taken_at, :best_yes_bid, :best_no_bid, :yes_ask,
                        :yes_depth, :no_depth, :raw)""",
-                {**snap, "raw": json.dumps(snap["raw"])},
+                # The full order book isn't used later and is the biggest thing we
+                # stored, so only the summary numbers are kept.
+                {**snap, "raw": "{}"},
             )
 
     def upsert_games(self, rows: Iterable[dict]) -> int:
@@ -221,6 +234,37 @@ class Store:
             (limit,),
         ).fetchall()
         return [json.loads(r[0]) for r in rows]
+
+    def prune(self) -> dict:
+        """Delete old records so the database can't fill the disk.
+
+        Keeps: every decision and paper bet (the learning history), sports
+        results, and any market a paper bet still needs. Deletes order book
+        snapshots older than KEEP_ORDERBOOK_DAYS, markets not seen for
+        KEEP_MARKET_DAYS, and run summaries older than KEEP_RUN_LOG_DAYS.
+        Freed space is reused by new rows, so the file stops growing.
+        """
+        now = datetime.now(timezone.utc)
+
+        def ago(days: int) -> str:
+            return (now - timedelta(days=days)).isoformat(timespec="seconds")
+
+        with self.conn:
+            books = self.conn.execute(
+                "DELETE FROM orderbook_snapshots WHERE taken_at < ?", (ago(KEEP_ORDERBOOK_DAYS),)
+            ).rowcount
+            markets = self.conn.execute(
+                "DELETE FROM markets WHERE updated_at < ? AND ticker NOT IN "
+                "(SELECT ticker FROM paper_bets WHERE status = 'open')",
+                (ago(KEEP_MARKET_DAYS),),
+            ).rowcount
+            runs = self.conn.execute(
+                "DELETE FROM run_log WHERE started_at < ?", (ago(KEEP_RUN_LOG_DAYS),)
+            ).rowcount
+        if books or markets or runs:
+            log.info("cleanup: removed %d old order books, %d old markets, %d old run logs",
+                     books, markets, runs)
+        return {"orderbooks": books, "markets": markets, "run_log": runs}
 
     def count(self, table: str) -> int:
         return self.conn.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
