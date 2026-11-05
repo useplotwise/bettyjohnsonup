@@ -14,7 +14,9 @@ class FakeClient:
         self.markets = markets
         self.books = books
 
-    def iter_markets(self, status="open", mve_filter=None):
+    def iter_markets(self, status="open", mve_filter=None, series_ticker=None):
+        if series_ticker:
+            return iter([m for m in self.markets if m["ticker"].startswith(series_ticker)])
         if mve_filter == "only":
             return iter([m for m in self.markets if is_combo_market(m)])
         if mve_filter == "exclude":
@@ -163,3 +165,13 @@ def test_prune_and_compact_keep_history(tmp_path):
     store.conn.commit()
     assert store.prune() == {"orderbooks": 1, "markets": 1, "run_log": 0}
     assert store.count("markets") == 1
+
+
+def test_game_series_are_read_beyond_the_scan_limit():
+    store = Store(":memory:")
+    markets = [{"ticker": f"OTHER{i}", "status": "open"} for i in range(5)]
+    markets.append({"ticker": "KXNBAGAME-26NOV05LALBOS-LAL", "status": "open"})
+    client = FakeClient(markets, {})
+    rows = collect_markets(client, store, max_markets=3, game_series=("KXNBAGAME",))
+    tickers = {r["ticker"] for r in rows}
+    assert "KXNBAGAME-26NOV05LALBOS-LAL" in tickers and len(tickers) == 4

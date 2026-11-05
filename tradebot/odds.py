@@ -179,8 +179,11 @@ def _parse_time(value) -> datetime | None:
 class BookOdds:
     """Answers "what do the sportsbooks say about this Kalshi market?"."""
 
-    def __init__(self, games: list[dict]):
+    def __init__(self, games: list[dict], event_names: dict[str, list[str]] | None = None):
         self.games = games
+        # Kalshi event -> the team names of its markets ("Miami", "Sacramento"),
+        # used when a market's title ("Miami wins") doesn't name the opponent.
+        self.event_names = event_names or {}
         self.matched = 0
         self.rejected = 0
         self._cache: dict[str, float | None] = {}
@@ -194,7 +197,15 @@ class BookOdds:
         ).fetchall()
         games = [{"home": r["home_team"], "away": r["away_team"], "commence": _parse_time(r["commence_time"]),
                   "probs": json.loads(r["probs"]), "source": r["source"]} for r in rows]
-        return cls(games)
+        event_names: dict[str, list[str]] = {}
+        if games:
+            for event, name in store.conn.execute(
+                "SELECT event_ticker, json_extract(raw, '$.yes_sub_title') FROM markets "
+                "WHERE is_combo = 0 AND status IN ('open', 'active') AND event_ticker IS NOT NULL"
+            ):
+                if name and not set(_tokens(name)) & TIE_WORDS:
+                    event_names.setdefault(event, []).append(name)
+        return cls(games, event_names)
 
     def yes_prob(self, market: dict) -> float | None:
         """Sportsbook probability that this market resolves YES, or None if no safe match."""
@@ -209,15 +220,23 @@ class BookOdds:
     def _match(self, market: dict) -> float | None:
         yes_name = market.get("yes_sub_title") or market.get("subtitle") or ""
         title = market.get("title") or ""
-        if not yes_name or not self.games or not _VS.search(title):
+        if not yes_name or not self.games:
             return None
+        if _VS.search(title):
+            same_game = lambda home, away: _same_game(title, home, away)  # noqa: E731
+        else:
+            # "Miami wins": the two teams come from the event's other markets.
+            names = list(dict.fromkeys(self.event_names.get(market.get("event_ticker"), [])))
+            if len(names) != 2:
+                return None
+            same_game = lambda home, away: _same_teams(names[0], names[1], home, away)  # noqa: E731
         when = _parse_time(market.get("expected_expiration_time") or market.get("close_time"))
         found = []
         for game in self.games:
             if when and game["commence"] and abs(when - game["commence"]) > timedelta(days=MAX_DAYS_APART):
                 continue
             teams = [game["home"], game["away"]]
-            if not _same_game(title, *teams):
+            if not same_game(*teams):
                 continue
             if set(_tokens(yes_name)) & TIE_WORDS:
                 draw = next((p for n, p in game["probs"].items() if n.lower() in TIE_WORDS), None)
@@ -252,7 +271,11 @@ def _same_game(title: str, home: str, away: str) -> bool:
     sides = re.split(r"\s+(?:vs\.?|v\.?|at|@)\s+", title, flags=re.IGNORECASE)
     if len(sides) != 2:
         return False
-    a, b = sides
+    return _same_teams(sides[0], sides[1], home, away)
+
+
+def _same_teams(a: str, b: str, home: str, away: str) -> bool:
+    """Do Kalshi's two short names fit this game's two teams, in exactly one way?"""
     straight = name_matches(a, home) and name_matches(b, away)
     crossed = name_matches(a, away) and name_matches(b, home)
     return straight != crossed  # exactly one way round, so it's unambiguous
