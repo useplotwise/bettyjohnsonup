@@ -132,3 +132,30 @@ def test_builder_prefers_legs_kalshi_sells_cheap():
 def test_build_plan_rotates_safe_then_long_shot():
     settings = Settings(builder_leg_counts=(2, 3), builder_longshot_leg_counts=(4,))
     assert [build_plan(settings, i) for i in range(4)] == [(2, False), (3, False), (4, True), (2, False)]
+
+
+def test_matches_kalshi_wins_titles_using_the_event():
+    """Kalshi's real game markets are titled "Brighton wins"; the opponent comes from the event."""
+    store = Store(":memory:")
+    brighton = _event("Brighton and Hove Albion", "Brentford", {
+        "pinnacle": {"Brighton and Hove Albion": 2.0, "Brentford": 4.0, "Draw": 4.0}})
+    refresh_odds(store, "key", ("soccer_epl",), "eu", 720, FakeOddsSession([brighton, ARSENAL]))
+    ev = "KXEPLGAME-26NOV08BRIBRE"
+    markets = [
+        {**_market(f"{ev}-BRI", "Brighton wins", "Brighton", 48, 50, ev), "expected_expiration_time": SOON},
+        {**_market(f"{ev}-BRE", "Brentford wins", "Brentford", 24, 26, ev), "expected_expiration_time": SOON},
+        {**_market(f"{ev}-TIE", "Tie is the result", "Tie", 24, 26, ev), "expected_expiration_time": SOON},
+    ]
+    store.upsert_markets(
+        [{"ticker": m["ticker"], "event_ticker": ev, "series_ticker": "KXEPLGAME", "category": None,
+          "title": m["title"], "status": "active", "is_combo": 0, "close_time": SOON, "result": None, "raw": m}
+         for m in markets])
+    book = BookOdds.from_store(store)
+    assert abs(book.yes_prob(markets[0]) - 0.5) < 1e-9
+    assert abs(book.yes_prob(markets[1]) - 0.25) < 1e-9
+    assert abs(book.yes_prob(markets[2]) - 0.25) < 1e-9
+    # A market whose event has no known opponent isn't guessed at.
+    lone = {**_market("X-MIA", "Miami wins", "Miami", 50, 52, "X"), "expected_expiration_time": SOON}
+    assert book.yes_prob(lone) is None
+    stats = find_value_bets(Settings(), store, book, bankroll_rules(Settings()), 0)
+    assert stats["legs_matched"] == 3

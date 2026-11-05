@@ -59,6 +59,11 @@ class Settings:
     )
     odds_regions: str = "eu"
     odds_refresh_minutes: float = 720.0
+    # Kalshi game-winner series, read in full every scan so the sportsbook
+    # odds have Kalshi markets to compare against.
+    kalshi_game_series: tuple[str, ...] = (
+        "KXNBAGAME", "KXNFLGAME", "KXNHLGAME", "KXNCAAFGAME", "KXNCAAMBGAME", "KXEPLGAME",
+    )
 
     @property
     def kalshi_base_url(self) -> str:
@@ -129,4 +134,10 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         ),
         odds_regions=os.getenv("ODDS_REGIONS", "eu"),
         odds_refresh_minutes=float(os.getenv("ODDS_REFRESH_MINUTES", "720")),
+        kalshi_game_series=tuple(
+            s.strip() for s in os.getenv(
+                "KALSHI_GAME_SERIES",
+                "KXNBAGAME,KXNFLGAME,KXNHLGAME,KXNCAAFGAME,KXNCAAMBGAME,KXEPLGAME",
+            ).split(",") if s.strip()
+        ),
     )

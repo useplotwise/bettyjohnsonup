@@ -74,7 +74,8 @@ def _take(markets, limit: int, label: str) -> list[dict]:
 
 
 def collect_markets(
-    client: KalshiClient, store: Store, max_markets: int | None = None, max_combos: int = 2000
+    client: KalshiClient, store: Store, max_markets: int | None = None, max_combos: int = 2000,
+    game_series: tuple[str, ...] = (),
 ) -> list[dict]:
     """Read regular markets and combo markets separately.
 
@@ -88,6 +89,17 @@ def collect_markets(
     except KalshiError as exc:
         log.warning("filtered market scan failed (%s); scanning without filter", exc)
         others, combos = _take(client.iter_markets(status="open"), max_markets or 0, "markets"), []
+    # Game-winner markets can sit beyond the regular-market limit, so read
+    # each sports series directly (these are what sportsbook odds match).
+    games = []
+    for series in game_series:
+        try:
+            games += _take(client.iter_markets(status="open", series_ticker=series), 0, series)
+        except KalshiError as exc:
+            log.warning("game series %s: %s", series, exc)
+    if game_series:
+        log.info("read %d game-winner markets from %d series", len(games), len(game_series))
+    others = games + others
     if any(r["is_combo"] for r in others):
         log.warning("the regular-market scan returned combos; mve_filter may be ignored")
     # De-duplicate in case the filter was ignored and both scans overlap.

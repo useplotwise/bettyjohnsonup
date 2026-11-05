@@ -54,7 +54,8 @@ def run_cycle(settings: Settings, client: KalshiClient, store: Store) -> dict:
     log.info("scan started (%s exchange, dry run: %s)", settings.kalshi_env, settings.dry_run)
     try:
         markets = collect_markets(
-            client, store, settings.max_markets_per_scan, settings.max_combos_per_scan
+            client, store, settings.max_markets_per_scan, settings.max_combos_per_scan,
+            settings.kalshi_game_series,
         )
         summary["markets"] = len(markets)
         summary["combos"] = sum(m["is_combo"] for m in markets)
