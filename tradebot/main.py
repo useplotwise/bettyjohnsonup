@@ -124,6 +124,12 @@ def run_cycle(settings: Settings, client: KalshiClient, store: Store) -> dict:
         log.exception("scorecard failed")
         summary["errors"].append(f"scorecard: {exc}")
 
+    try:
+        summary["cleanup"] = store.prune()
+    except Exception as exc:
+        log.exception("cleanup failed")
+        summary["errors"].append(f"cleanup: {exc}")
+
     store.finish_run(run_id, summary)
     log.info("cycle done: %s", summary)
     return summary

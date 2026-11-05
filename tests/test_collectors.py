@@ -123,3 +123,43 @@ def test_collect_markets_falls_back_without_filter():
     store = Store(":memory:")
     client = RejectsFilterClient([{"ticker": "A", "status": "open"}], {})
     assert len(collect_markets(client, store)) == 1
+
+
+def test_prune_and_compact_keep_history(tmp_path):
+    from datetime import datetime, timedelta, timezone
+
+    from tradebot.compact import compact
+
+    path = tmp_path / "bot.sqlite3"
+    store = Store(path)
+    old = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat(timespec="seconds")
+    store.upsert_markets([{"ticker": t, "event_ticker": None, "series_ticker": None, "category": None,
+                           "title": None, "status": "open", "is_combo": 0, "close_time": None,
+                           "result": None, "raw": {"ticker": t}} for t in ("NEW", "OLD", "BET")])
+    store.conn.execute("UPDATE markets SET updated_at = ? WHERE ticker IN ('OLD', 'BET')", (old,))
+    store.conn.execute(
+        "INSERT INTO paper_bets (opened_at, kind, ticker, side, price, contracts, fee) "
+        "VALUES (?, 'pick', 'BET', 'yes', 0.5, 2, 0.02)", (old,))
+    for taken in (old, datetime.now(timezone.utc).isoformat(timespec="seconds")):
+        store.conn.execute(
+            "INSERT INTO orderbook_snapshots (ticker, taken_at, yes_depth, no_depth, raw) "
+            "VALUES ('NEW', ?, 0, 0, '{}')", (taken,))
+    store.add_decision({"kind": "combo", "ticker": "X", "action": "would_buy", "dry_run": True})
+    store.conn.commit()
+    store.close()
+
+    compact(path)
+    store = Store(path)
+    # History kept; markets an open paper bet needs kept; stale markets and books gone.
+    assert store.count("paper_bets") == 1 and store.count("decisions") == 1
+    assert {r[0] for r in store.conn.execute("SELECT ticker FROM markets")} == {"BET"}
+    assert store.count("orderbook_snapshots") == 0
+
+    store.conn.execute(
+        "INSERT INTO orderbook_snapshots (ticker, taken_at, yes_depth, no_depth, raw) "
+        "VALUES ('NEW', ?, 0, 0, '{}')", (old,))
+    store.conn.execute("INSERT INTO markets SELECT 'OLD2', event_ticker, series_ticker, category, title, "
+                       "status, is_combo, close_time, result, raw, ? FROM markets WHERE ticker='BET'", (old,))
+    store.conn.commit()
+    assert store.prune() == {"orderbooks": 1, "markets": 1, "run_log": 0}
+    assert store.count("markets") == 1
