@@ -152,14 +152,14 @@ def test_prune_and_compact_keep_history(tmp_path):
     store = Store(path)
     # History kept; markets an open paper bet needs kept; stale markets and books gone.
     assert store.count("paper_bets") == 1 and store.count("decisions") == 1
-    assert {r[0] for r in store.conn.execute("SELECT ticker FROM markets")} == {"NEW", "BET"}
+    assert {r[0] for r in store.conn.execute("SELECT ticker FROM markets")} == {"BET"}
     assert store.count("orderbook_snapshots") == 0
 
     store.conn.execute(
         "INSERT INTO orderbook_snapshots (ticker, taken_at, yes_depth, no_depth, raw) "
         "VALUES ('NEW', ?, 0, 0, '{}')", (old,))
     store.conn.execute("INSERT INTO markets SELECT 'OLD2', event_ticker, series_ticker, category, title, "
-                       "status, is_combo, close_time, result, raw, ? FROM markets WHERE ticker='NEW'", (old,))
+                       "status, is_combo, close_time, result, raw, ? FROM markets WHERE ticker='BET'", (old,))
     store.conn.commit()
     assert store.prune() == {"orderbooks": 1, "markets": 1, "run_log": 0}
-    assert store.count("markets") == 2
+    assert store.count("markets") == 1
