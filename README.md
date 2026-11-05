@@ -67,6 +67,12 @@ Each cycle the bot:
    prices, one per game, rotating through 2, 3, 4, 6 and 8 legs. It creates
    each combo on Kalshi (free, no order), asks for a quote, and treats it like
    any other combo from there.
+   With `ODDS_API_KEY` set (`tradebot/odds.py`), the bot also fetches sharp
+   sportsbook odds for game winners, matches them to Kalshi markets by team
+   names and date, and uses the books' chance for those legs. The builder
+   picks legs Kalshi sells cheaper than the books first, and
+   `tradebot/strategy/value.py` paper trades single game-winner markets where
+   Kalshi's price is at least `MIN_EDGE` better than the books (kind "value").
 4. Paper trades (`tradebot/paper.py`): every would-buy pick becomes a pretend
    bet at its stake, every quoted combo becomes a 1-contract "watch" bet, and
    every quoted combo the bot built becomes a 1-contract "built" bet.

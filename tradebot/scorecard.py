@@ -15,7 +15,7 @@ def _pct(value: float | None) -> str:
 
 
 def _paper_lines(store: Store) -> list[str]:
-    picks, watch, built = (paper_summary(store, k) for k in ("pick", "watch", "built"))
+    picks, watch, built, value = (paper_summary(store, k) for k in ("pick", "watch", "built", "value"))
     return [
         "## Paper trading (pretend bets, all time)",
         "",
@@ -29,6 +29,10 @@ def _paper_lines(store: Store) -> list[str]:
         f"- Combos the bot built itself (1 contract each): {built['open']} waiting, "
         f"{built['settled']} finished, {built['won']} won. Pretend profit/loss: ${built['pnl']:+.2f}. "
         f"Expected to win {_pct(built['expected_win_rate'])}, actually won {_pct(built['actual_win_rate'])}.",
+        f"- Single bets where Kalshi was cheaper than the sportsbooks: {value['open']} waiting, "
+        f"{value['settled']} finished, {value['won']} won. Pretend profit/loss: ${value['pnl']:+.2f} "
+        f"on ${value['staked']:.2f} staked. Books said {_pct(value['expected_win_rate'])}, "
+        f"actually won {_pct(value['actual_win_rate'])}.",
         "",
     ] + _built_by_legs(store)
 
@@ -37,23 +41,24 @@ def _built_by_legs(store: Store) -> list[str]:
     rows = store.conn.execute(
         "SELECT raw, status, win_prob, price, pnl FROM paper_bets WHERE kind = 'built'"
     ).fetchall()
-    groups: dict[int, list] = {}
+    groups: dict[tuple[str, int], list] = {}
     for r in rows:
-        legs = len((json.loads(r["raw"]) if r["raw"] else {}).get("legs", []))
-        groups.setdefault(legs, []).append(r)
+        raw = json.loads(r["raw"]) if r["raw"] else {}
+        style = "long shot" if raw.get("longshot") else "safe"
+        groups.setdefault((style, len(raw.get("legs", []))), []).append(r)
     if not groups:
         return []
     lines = [
         "### Bot-built combos by number of legs",
         "",
-        "| Legs | Built | Finished | Won | Avg fair chance | Avg price | Pretend P&L |",
-        "|---|---|---|---|---|---|---|",
+        "| Style | Legs | Built | Finished | Won | Avg fair chance | Avg price | Pretend P&L |",
+        "|---|---|---|---|---|---|---|---|",
     ]
-    for legs in sorted(groups):
-        g = groups[legs]
+    for style, legs in sorted(groups):
+        g = groups[(style, legs)]
         done = [r for r in g if r["status"] in ("won", "lost")]
         lines.append(
-            f"| {legs} | {len(g)} | {len(done)} | {sum(r['status'] == 'won' for r in done)} | "
+            f"| {style} | {legs} | {len(g)} | {len(done)} | {sum(r['status'] == 'won' for r in done)} | "
             f"{sum(r['win_prob'] or 0 for r in g) / len(g):.1%} | "
             f"${sum(r['price'] for r in g) / len(g):.2f} | ${sum(r['pnl'] or 0 for r in done):+.2f} |"
         )

@@ -10,13 +10,17 @@ Each build:
 4. Records the result and paper trades one contract, so the scorecard can show
    which leg counts (if any) market makers underprice.
 
-Leg counts rotate through BUILDER_LEG_COUNTS, one per build.
+Builds rotate through BUILDER_LEG_COUNTS ("safe" legs, 65% to 95%) and then
+BUILDER_LONGSHOT_LEG_COUNTS (underdog legs, 20% to 50%, for big payouts). With
+sportsbook odds, legs that Kalshi sells cheaper than the books' chance are
+picked first and their chance comes from the books.
 """
 
 import logging
 import random
 import re
 from dataclasses import dataclass
+from typing import Callable
 
 from ..collectors.markets import is_combo_market
 from ..config import Settings
@@ -57,6 +61,7 @@ class Leg:
     side: str
     prob: float
     spread: float
+    value: float = 0.0  # sportsbook chance minus Kalshi's price for this side (0 if no sportsbook)
 
 
 def candidate_legs(
@@ -66,8 +71,13 @@ def candidate_legs(
     max_prob: float,
     max_spread: float,
     yes_only: bool = False,
+    book_prob: Callable[[dict], float | None] | None = None,
 ) -> list[Leg]:
-    """Legs whose chance is in range and whose price is tight, tightest first."""
+    """Legs whose chance is in range and whose price is tight.
+
+    With sportsbook odds (`book_prob`), a leg's chance is the books' number and
+    its value is how much cheaper Kalshi sells it. Best value first, then tightest.
+    """
     legs = []
     for m in markets:
         event = m.get("event_ticker")
@@ -80,21 +90,26 @@ def candidate_legs(
         if bid is None or ask is None or ask < bid or ask - bid > max_spread:
             continue
         mid = (bid + ask) / 2
-        for side, prob in (("yes", mid), ("no", 1 - mid)):
+        book = book_prob(m) if book_prob else None
+        p_yes = book if book is not None else mid
+        for side, prob, cost in (("yes", p_yes, ask), ("no", 1 - p_yes, 1 - bid)):
             if side == "no" and yes_only:
                 continue
             if min_prob <= prob <= max_prob:
-                legs.append(Leg(m["ticker"], event, side, round(prob, 4), round(ask - bid, 4)))
-    legs.sort(key=lambda leg: leg.spread)
+                value = round(prob - cost, 4) if book is not None else 0.0
+                legs.append(Leg(m["ticker"], event, side, round(prob, 4), round(ask - bid, 4), value))
+    legs.sort(key=lambda leg: (-leg.value, leg.spread))
     return legs
 
 
 def choose_legs(candidates: list[Leg], count: int, rng: random.Random, pool_size: int = 300) -> list[Leg]:
-    """Pick `count` legs at random from the tightest candidates, one per event."""
-    pool = candidates[:pool_size]
-    rng.shuffle(pool)
+    """Pick `count` legs, one per event: good-value legs first, then random tight ones."""
+    value = [l for l in candidates if l.value > 0.01]
+    rest = [l for l in candidates if l.value <= 0.01][:pool_size]
+    rng.shuffle(value)
+    rng.shuffle(rest)
     chosen, events = [], set()
-    for leg in pool:
+    for leg in value + rest:
         if leg.event_ticker in events:
             continue
         chosen.append(leg)
@@ -104,8 +119,19 @@ def choose_legs(candidates: list[Leg], count: int, rng: random.Random, pool_size
     return []
 
 
+def build_plan(settings: Settings, built_so_far: int) -> tuple[int, bool]:
+    """Which build this is in the rotation: (number of legs, long-shot or not)."""
+    plan = [(n, False) for n in settings.builder_leg_counts]
+    plan += [(n, True) for n in settings.builder_longshot_leg_counts]
+    return plan[built_so_far % len(plan)]
+
+
 def build_combo(
-    settings: Settings, client: KalshiClient, store: Store, rng: random.Random | None = None
+    settings: Settings,
+    client: KalshiClient,
+    store: Store,
+    rng: random.Random | None = None,
+    book_prob: Callable[[dict], float | None] | None = None,
 ) -> ComboEvaluation | None:
     rng = rng or random.Random()
     collection = client.get_collection(settings.builder_collection)
@@ -116,14 +142,17 @@ def build_combo(
     built_so_far = store.conn.execute(
         "SELECT COUNT(*) FROM decisions WHERE action = 'built_combo'"
     ).fetchone()[0]
-    count = settings.builder_leg_counts[built_so_far % len(settings.builder_leg_counts)]
+    count, longshot = build_plan(settings, built_so_far)
+    if longshot:
+        min_prob, max_prob = settings.builder_longshot_min_prob, settings.builder_longshot_max_prob
+    else:
+        min_prob, max_prob = settings.builder_min_leg_prob, settings.builder_max_leg_prob
     count = max(count, int(collection.get("size_min") or 2))
     if collection.get("size_max"):
         count = min(count, int(collection["size_max"]))
 
     candidates = candidate_legs(
-        store.leg_markets(), eligible, settings.builder_min_leg_prob,
-        settings.builder_max_leg_prob, settings.builder_max_spread, yes_only,
+        store.leg_markets(), eligible, min_prob, max_prob, settings.builder_max_spread, yes_only, book_prob,
     )
     for _ in range(MAX_ATTEMPTS):
         usable = [
@@ -166,14 +195,17 @@ def build_combo(
             "price": ask,
             "edge": edge,
             "dry_run": settings.dry_run,
-            "reason": f"built {len(legs)}-leg combo" + ("" if ask else ", no quotes"),
-            "raw": {"legs": leg_pairs, "leg_probs": [l.prob for l in legs], "quote": best[1] if best else None},
+            "reason": f"built {len(legs)}-leg {'long-shot' if longshot else 'safe'} combo"
+            + ("" if ask else ", no quotes"),
+            "raw": {"legs": leg_pairs, "leg_probs": [l.prob for l in legs], "longshot": longshot,
+                    "value_legs": sum(l.value > 0.01 for l in legs), "quote": best[1] if best else None},
         }
     )
     if ask is not None:
-        open_paper_bet(store, "built", ticker, "yes", ask, 1, fair, edge, {"legs": leg_pairs})
+        open_paper_bet(store, "built", ticker, "yes", ask, 1, fair, edge,
+                       {"legs": leg_pairs, "longshot": longshot})
     log.info(
-        "built %d-leg combo %s: fair %.2f%%, best quote %s",
-        len(legs), ticker, fair * 100, "none" if ask is None else f"{ask * 100:.2f}%",
+        "built %d-leg %s combo %s: fair %.2f%%, best quote %s",
+        len(legs), "long-shot" if longshot else "safe", ticker, fair * 100, "none" if ask is None else f"{ask * 100:.2f}%",
     )
     return ComboEvaluation(ticker=ticker, legs=leg_pairs, fair_prob=fair, ask=ask, bid=None, edge=edge)

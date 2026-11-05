@@ -1,0 +1,134 @@
+import random
+from datetime import datetime, timedelta, timezone
+
+from tradebot.config import Settings
+from tradebot.odds import BookOdds, consensus, devig, name_matches, refresh_odds
+from tradebot.storage import Store
+from tradebot.strategy.builder import build_plan, candidate_legs, choose_legs
+from tradebot.strategy.runner import bankroll_rules
+from tradebot.strategy.value import find_value_bets
+
+SOON = (datetime.now(timezone.utc) + timedelta(hours=5)).isoformat()
+
+
+def _event(home, away, books):
+    return {
+        "id": f"{home}-{away}", "home_team": home, "away_team": away, "commence_time": SOON,
+        "bookmakers": [
+            {"key": key, "markets": [{"key": "h2h", "outcomes": [{"name": n, "price": p} for n, p in prices.items()]}]}
+            for key, prices in books.items()
+        ],
+    }
+
+
+LAKERS = _event("Los Angeles Lakers", "Los Angeles Clippers", {
+    "pinnacle": {"Los Angeles Lakers": 1.60, "Los Angeles Clippers": 2.50},
+    "draftkings": {"Los Angeles Lakers": 1.50, "Los Angeles Clippers": 2.70},
+})
+ARSENAL = _event("Arsenal", "Chelsea", {"williamhill": {"Arsenal": 2.0, "Chelsea": 4.0, "Draw": 4.0}})
+
+
+def _market(ticker, title, yes_name, bid, ask, event="EV1"):
+    return {"ticker": ticker, "event_ticker": event, "title": title, "yes_sub_title": yes_name,
+            "status": "active", "yes_bid": bid, "yes_ask": ask, "close_time": SOON}
+
+
+def test_devig_and_consensus_prefer_pinnacle():
+    probs = devig({"A": 1.60, "B": 2.50})
+    assert abs(sum(probs.values()) - 1) < 1e-9 and probs["A"] > probs["B"]
+    probs, source = consensus(LAKERS)
+    assert source == "pinnacle" and abs(probs["Los Angeles Lakers"] - 0.6098) < 0.001
+    probs, source = consensus(ARSENAL)
+    assert source == "average of 1 books" and abs(probs["Draw"] - 0.25) < 1e-9
+
+
+def test_name_matching_is_ordered():
+    assert name_matches("Los Angeles L", "Los Angeles Lakers")
+    assert not name_matches("Los Angeles L", "Los Angeles Clippers")
+    assert name_matches("Chicago", "Chicago Bulls") and not name_matches("", "Chicago Bulls")
+
+
+class FakeOddsSession:
+    def __init__(self, events):
+        self.events, self.calls = events, []
+
+    def get(self, url, params, timeout):
+        self.calls.append(url)
+        events = self.events
+
+        class Resp:
+            headers = {"x-requests-remaining": "480"}
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return events
+        return Resp()
+
+
+def _book():
+    store = Store(":memory:")
+    session = FakeOddsSession([LAKERS, ARSENAL])
+    stats = refresh_odds(store, "key", ("basketball_nba",), "eu", 720, session)
+    assert stats == {"sports_fetched": 1, "games": 2, "lookups_left": "480"}
+    # Within the refresh window nothing is fetched again (saves free lookups).
+    assert refresh_odds(store, "key", ("basketball_nba",), "eu", 720, session)["sports_fetched"] == 0
+    assert len(session.calls) == 1
+    assert refresh_odds(store, "", ("soccer_epl",), "eu", 720, session)["sports_fetched"] == 0
+    return store, BookOdds.from_store(store)
+
+
+def test_matching_kalshi_markets_to_games():
+    _, book = _book()
+    lal = _market("LAL", "Los Angeles L vs Los Angeles C Winner?", "Los Angeles L", 55, 57)
+    lac = _market("LAC", "Los Angeles L vs Los Angeles C Winner?", "Los Angeles C", 43, 45)
+    tie = _market("TIE", "Arsenal vs Chelsea Winner?", "Tie", 23, 27)
+    other = _market("X", "Boston vs Miami Winner?", "Boston", 50, 52)
+    assert abs(book.yes_prob(lal) - 0.6098) < 0.001
+    assert abs(book.yes_prob(lac) - 0.3902) < 0.001
+    assert abs(book.yes_prob(tie) - 0.25) < 1e-9
+    assert book.yes_prob(other) is None
+    # A "match" far from Kalshi's own price is distrusted (likely a wrong match).
+    assert book.yes_prob(_market("LAL2", "Los Angeles L vs Los Angeles C Winner?", "Los Angeles L", 10, 12)) is None
+    assert book.rejected == 1
+    # leg_prob falls back to Kalshi's price when there's no match.
+    assert book.leg_prob(other) == 0.51
+
+
+def test_value_bets_are_paper_traded(tmp_path):
+    store, book = _book()
+    store.upsert_markets(
+        [{"ticker": m["ticker"], "event_ticker": "EV", "series_ticker": None, "category": None, "title": m["title"],
+          "status": "active", "is_combo": 0, "close_time": SOON, "result": None, "raw": m}
+         for m in (
+             _market("LAL", "Los Angeles L vs Los Angeles C Winner?", "Los Angeles L", 50, 52),  # books 61%
+             _market("TIE", "Arsenal vs Chelsea Winner?", "Tie", 25, 27),  # books 25%: no edge either side
+         )]
+    )
+    settings = Settings(log_dir=tmp_path)
+    stats = find_value_bets(settings, store, book, bankroll_rules(settings), 0)
+    assert stats == {"legs_matched": 2, "value_bets": 1}
+    [bet] = store.conn.execute("SELECT * FROM paper_bets").fetchall()
+    assert bet["kind"] == "value" and bet["ticker"] == "LAL" and bet["side"] == "yes" and bet["price"] == 0.52
+    # Not doubled up while it's open.
+    assert find_value_bets(settings, store, book, bankroll_rules(settings), 0)["value_bets"] == 0
+
+
+def test_builder_prefers_legs_kalshi_sells_cheap():
+    _, book = _book()
+    markets = [
+        _market("LAL", "Los Angeles L vs Los Angeles C Winner?", "Los Angeles L", 50, 52, "G1"),  # value ~9c
+        _market("B", "Boston vs Miami Winner?", "Boston", 69, 71, "G2"),
+        _market("C", "Denver vs Utah Winner?", "Denver", 74, 76, "G3"),
+    ]
+    legs = candidate_legs(markets, None, 0.55, 0.95, 0.06, book_prob=book.yes_prob)
+    assert legs[0].market_ticker == "LAL" and legs[0].value > 0.05 and abs(legs[0].prob - 0.6098) < 0.001
+    for seed in range(10):
+        chosen = choose_legs(legs, 2, random.Random(seed))
+        assert "LAL" in {l.market_ticker for l in chosen}
+
+
+def test_build_plan_rotates_safe_then_long_shot():
+    settings = Settings(builder_leg_counts=(2, 3), builder_longshot_leg_counts=(4,))
+    assert [build_plan(settings, i) for i in range(4)] == [(2, False), (3, False), (4, True), (2, False)]
