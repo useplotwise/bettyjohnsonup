@@ -11,6 +11,8 @@ import logging
 
 from ..bankroll import BankrollRules, contracts_for, size_bet
 from ..config import Settings
+from ..kalshi_client import KalshiError
+from ..live import live_enabled, place_live_single
 from ..odds import BookOdds
 from ..paper import open_paper_bet
 from ..pricing import quotes, settled_result
@@ -21,9 +23,11 @@ log = logging.getLogger(__name__)
 
 
 def find_value_bets(
-    settings: Settings, store: Store, book: BookOdds, rules: BankrollRules, lifetime_profit: float
+    settings: Settings, store: Store, book: BookOdds, rules: BankrollRules, lifetime_profit: float,
+    client=None, balance: float | None = None,
 ) -> dict:
-    stats = {"legs_matched": 0, "value_bets": 0}
+    stats = {"legs_matched": 0, "value_bets": 0, "bought": 0}
+    live = client is not None and live_enabled(settings)
     if not book.games:
         return stats
     for market in store.leg_markets():
@@ -41,7 +45,7 @@ def find_value_bets(
             if edge < settings.min_edge:
                 continue
             # Paper bets aren't limited by the real account balance.
-            stake = size_bet(rules, prob, edge, lifetime_profit, None)
+            stake = size_bet(rules, prob, edge, lifetime_profit, balance if live else None)
             contracts = contracts_for(stake.amount, cost)
             if stake.amount <= 0 or contracts <= 0:
                 continue
@@ -68,4 +72,10 @@ def find_value_bets(
                 "value bet %s %s: books %.1f%% vs Kalshi %.1f%%, edge %.0f%%, paper stake $%.2f",
                 market["ticker"], side, prob * 100, cost * 100, edge * 100, stake.amount,
             )
+            if live and not stake.needs_approval:
+                try:
+                    result = place_live_single(settings, client, store, market["ticker"], side, prob, stake.amount)
+                    stats["bought"] += result["status"] == "bought"
+                except KalshiError as exc:
+                    log.warning("live value bet %s failed: %s", market["ticker"], exc)
     return stats

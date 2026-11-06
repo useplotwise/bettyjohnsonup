@@ -108,7 +108,8 @@ def run_cycle(settings: Settings, client: KalshiClient, store: Store) -> dict:
 
     for name, step in (
         ("combo_picks", lambda: evaluate_combos(settings, client, store, bet_balance, lifetime_profit, book)),
-        ("value_bets", lambda: find_value_bets(settings, store, book, bankroll_rules(settings), lifetime_profit)),
+        ("value_bets", lambda: find_value_bets(settings, store, book, bankroll_rules(settings), lifetime_profit,
+                                              client, bet_balance)),
         ("cashouts", lambda: check_cash_outs(settings, client, store)),
         ("paper", lambda: settle_paper_bets(client, store)),
     ):

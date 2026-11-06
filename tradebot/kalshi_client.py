@@ -140,6 +140,25 @@ class KalshiClient:
     def get_fills(self, **params) -> dict:
         return self.request("GET", "/portfolio/fills", params=params, signed=True)
 
+    # -- orders on single markets (signed) ----------------------------------
+
+    def create_order(self, ticker: str, side: str, count: int, price: float, client_order_id: str) -> dict:
+        """Limit order to BUY `count` contracts of `side` at no more than `price` dollars."""
+        cents = int(round(price * 100))
+        body = {
+            "ticker": ticker,
+            "client_order_id": client_order_id,
+            "action": "buy",
+            "side": side,
+            "count": int(count),
+            "type": "limit",
+            f"{side}_price": cents,
+        }
+        return self.request("POST", "/portfolio/orders", json=body, signed=True).get("order", {})
+
+    def cancel_order(self, order_id: str) -> None:
+        self.request("DELETE", f"/portfolio/orders/{order_id}", signed=True)
+
     # -- request for quote (signed) -----------------------------------------
     # Combo markets have no resting orders; prices come from market makers'
     # quotes in reply to an RFQ. Creating or deleting an RFQ moves no money.

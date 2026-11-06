@@ -129,3 +129,48 @@ def test_scorecard_shows_real_bets(tmp_path):
     assert "LIVE (real bets)" in text and "## Real bets" in text and "Real bets placed today: 1" in text
     text = write_scorecard(store, tmp_path, 25.0, False, replace(LIVE, bot_bankroll=0)).read_text()
     assert "BOT_BANKROLL is 0" in text
+
+
+class SingleMarketMaker:
+    """Fake Kalshi for single-market orders: fills `fill` of the order at the asked price."""
+
+    def __init__(self, yes_ask=40, fill=None):
+        self.yes_ask, self.fill = yes_ask, fill
+        self.orders, self.cancelled = [], []
+
+    def get_market(self, ticker):
+        return {"ticker": ticker, "yes_bid": self.yes_ask - 2, "yes_ask": self.yes_ask}
+
+    def create_order(self, ticker, side, count, price, client_order_id):
+        self.orders.append((ticker, side, count, price))
+        return {"order_id": "o1"}
+
+    def cancel_order(self, order_id):
+        self.cancelled.append(order_id)
+
+    def get_fills(self, **params):
+        ticker, side, count, price = self.orders[-1]
+        n = count if self.fill is None else self.fill
+        return {"fills": [{"side": side, "action": "buy", "count": n, f"{side}_price": round(price * 100)}]
+                if n else []}
+
+
+def test_single_market_bet_buys_at_fresh_price_and_cancels_rest():
+    from tradebot.live import place_live_single
+
+    store, mm = Store(":memory:"), SingleMarketMaker(yes_ask=40, fill=6)
+    result = place_live_single(LIVE, mm, store, "KXNBAGAME-X-LAL", "yes", 0.55, 5.0, sleep=NO_SLEEP)
+    assert mm.orders == [("KXNBAGAME-X-LAL", "yes", 12, 0.40)] and mm.cancelled == ["o1"]
+    assert result["status"] == "bought" and result["contracts"] == 6 and result["price"] == 0.40
+    assert bot_ledger(store)["open"] == 1
+
+    # Price moved: no edge left, so no order.
+    mm2 = SingleMarketMaker(yes_ask=54)
+    result = place_live_single(LIVE, mm2, Store(":memory:"), "T", "yes", 0.55, 5.0, sleep=NO_SLEEP)
+    assert result["status"] == "skipped" and mm2.orders == []
+
+    # Nothing filled: no bet recorded.
+    store3, mm3 = Store(":memory:"), SingleMarketMaker(yes_ask=40, fill=0)
+    result = place_live_single(LIVE, mm3, store3, "T", "yes", 0.55, 5.0, sleep=NO_SLEEP)
+    assert result["status"] == "skipped" and "didn't fill" in result["reason"]
+    assert bot_ledger(store3)["open"] == 0
