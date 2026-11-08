@@ -33,6 +33,10 @@ ODDS_BASE = "https://api.the-odds-api.com/v4"
 SHARP_BOOK = "pinnacle"
 MAX_GAP = 0.25
 MAX_DAYS_APART = 2
+# Sportsbook odds are fetched before the game. Once it starts, Kalshi's price
+# moves with the score and the old odds mean nothing, so they stop being used
+# a few minutes before the listed start time.
+STOP_BEFORE_START = timedelta(minutes=5)
 TIE_WORDS = {"tie", "draw"}
 STOP_WORDS = {"winner", "win", "wins", "will", "the", "fc", "sc", "cf"}
 
@@ -179,8 +183,10 @@ def _parse_time(value) -> datetime | None:
 class BookOdds:
     """Answers "what do the sportsbooks say about this Kalshi market?"."""
 
-    def __init__(self, games: list[dict], event_names: dict[str, list[str]] | None = None):
+    def __init__(self, games: list[dict], event_names: dict[str, list[str]] | None = None,
+                 now: datetime | None = None):
         self.games = games
+        self.now = now or datetime.now(timezone.utc)
         # Kalshi event -> the team names of its markets ("Miami", "Sacramento"),
         # used when a market's title ("Miami wins") doesn't name the opponent.
         self.event_names = event_names or {}
@@ -238,6 +244,8 @@ class BookOdds:
             teams = [game["home"], game["away"]]
             if not same_game(*teams):
                 continue
+            if not game["commence"] or game["commence"] - STOP_BEFORE_START <= self.now:
+                return None  # started (or start unknown): pregame odds no longer apply
             if set(_tokens(yes_name)) & TIE_WORDS:
                 draw = next((p for n, p in game["probs"].items() if n.lower() in TIE_WORDS), None)
                 if draw is not None:

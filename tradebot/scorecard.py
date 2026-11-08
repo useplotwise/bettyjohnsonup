@@ -15,7 +15,8 @@ def _pct(value: float | None) -> str:
 
 
 def _paper_lines(store: Store) -> list[str]:
-    picks, watch, built, value = (paper_summary(store, k) for k in ("pick", "watch", "built", "value"))
+    picks, watch, built, value, old = (paper_summary(store, k)
+                                       for k in ("pick", "watch", "built", "pregame", "value"))
     return [
         "## Paper trading (pretend bets, all time)",
         "",
@@ -29,10 +30,12 @@ def _paper_lines(store: Store) -> list[str]:
         f"- Combos the bot built itself (1 contract each): {built['open']} waiting, "
         f"{built['settled']} finished, {built['won']} won. Pretend profit/loss: ${built['pnl']:+.2f}. "
         f"Expected to win {_pct(built['expected_win_rate'])}, actually won {_pct(built['actual_win_rate'])}.",
-        f"- Single bets where Kalshi was cheaper than the sportsbooks: {value['open']} waiting, "
+        f"- Single bets where Kalshi was cheaper than the sportsbooks (before the game starts): {value['open']} waiting, "
         f"{value['settled']} finished, {value['won']} won. Pretend profit/loss: ${value['pnl']:+.2f} "
         f"on ${value['staked']:.2f} staked. Books said {_pct(value['expected_win_rate'])}, "
         f"actually won {_pct(value['actual_win_rate'])}.",
+        f"- Old single bets (retired: that version also bet games already under way): {old['settled']} finished, "
+        f"{old['won']} won, pretend profit/loss ${old['pnl']:+.2f}.",
         "",
     ] + _built_by_legs(store)
 
