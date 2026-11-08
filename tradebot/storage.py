@@ -103,6 +103,9 @@ log = logging.getLogger(__name__)
 # How long old records are kept before the bot deletes them (see Store.prune).
 KEEP_ORDERBOOK_DAYS = 2
 KEEP_MARKET_DAYS = 3
+# Kalshi lists about 2,000 brand-new combo markets every scan and the bot only
+# looks at the newest ones, so old combos are dropped much sooner.
+KEEP_COMBO_HOURS = 2
 KEEP_RUN_LOG_DAYS = 30
 
 
@@ -241,21 +244,26 @@ class Store:
         Keeps: every decision and paper bet (the learning history), sports
         results, and any market a paper bet still needs. Deletes order book
         snapshots older than KEEP_ORDERBOOK_DAYS, markets not seen for
-        KEEP_MARKET_DAYS, and run summaries older than KEEP_RUN_LOG_DAYS.
+        KEEP_MARKET_DAYS (combo markets: KEEP_COMBO_HOURS), and run summaries older than KEEP_RUN_LOG_DAYS.
         Freed space is reused by new rows, so the file stops growing.
         """
         now = datetime.now(timezone.utc)
 
-        def ago(days: int) -> str:
-            return (now - timedelta(days=days)).isoformat(timespec="seconds")
+        def ago(days: float = 0, hours: float = 0) -> str:
+            return (now - timedelta(days=days, hours=hours)).isoformat(timespec="seconds")
+
+        keep_open_bets = "ticker NOT IN (SELECT ticker FROM paper_bets WHERE status = 'open')"
 
         with self.conn:
             books = self.conn.execute(
                 "DELETE FROM orderbook_snapshots WHERE taken_at < ?", (ago(KEEP_ORDERBOOK_DAYS),)
             ).rowcount
             markets = self.conn.execute(
-                "DELETE FROM markets WHERE updated_at < ? AND ticker NOT IN "
-                "(SELECT ticker FROM paper_bets WHERE status = 'open')",
+                f"DELETE FROM markets WHERE is_combo = 1 AND updated_at < ? AND {keep_open_bets}",
+                (ago(hours=KEEP_COMBO_HOURS),),
+            ).rowcount
+            markets += self.conn.execute(
+                f"DELETE FROM markets WHERE updated_at < ? AND {keep_open_bets}",
                 (ago(KEEP_MARKET_DAYS),),
             ).rowcount
             runs = self.conn.execute(

@@ -175,3 +175,23 @@ def test_game_series_are_read_beyond_the_scan_limit():
     rows = collect_markets(client, store, max_markets=3, game_series=("KXNBAGAME",))
     tickers = {r["ticker"] for r in rows}
     assert "KXNBAGAME-26NOV05LALBOS-LAL" in tickers and len(tickers) == 4
+
+
+def test_prune_drops_old_combos_sooner():
+    from datetime import datetime, timedelta, timezone
+
+    store = Store(":memory:")
+    store.upsert_markets([{"ticker": t, "event_ticker": None, "series_ticker": None, "category": None,
+                           "title": None, "status": "open", "is_combo": int(t.startswith("C")),
+                           "close_time": None, "result": None, "raw": {"ticker": t}}
+                          for t in ("C_NEW", "C_OLD", "C_BET", "S_OLD")])
+    three_hours = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat(timespec="seconds")
+    store.conn.execute("UPDATE markets SET updated_at = ? WHERE ticker != 'C_NEW'", (three_hours,))
+    store.conn.execute(
+        "INSERT INTO paper_bets (opened_at, kind, ticker, side, price, contracts, fee) "
+        "VALUES (?, 'combo', 'C_BET', 'yes', 0.5, 2, 0.02)", (three_hours,))
+    store.conn.commit()
+    assert store.prune()["markets"] == 1
+    # The 3-hour-old combo is gone; the new one, the one a bet needs, and the
+    # 3-hour-old single market stay.
+    assert {r[0] for r in store.conn.execute("SELECT ticker FROM markets")} == {"C_NEW", "C_BET", "S_OLD"}
