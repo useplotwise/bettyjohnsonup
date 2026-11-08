@@ -110,7 +110,7 @@ def test_value_bets_are_paper_traded(tmp_path):
     stats = find_value_bets(settings, store, book, bankroll_rules(settings), 0)
     assert stats == {"legs_matched": 2, "value_bets": 1, "bought": 0}
     [bet] = store.conn.execute("SELECT * FROM paper_bets").fetchall()
-    assert bet["kind"] == "value" and bet["ticker"] == "LAL" and bet["side"] == "yes" and bet["price"] == 0.52
+    assert bet["kind"] == "pregame" and bet["ticker"] == "LAL" and bet["side"] == "yes" and bet["price"] == 0.52
     # Not doubled up while it's open.
     assert find_value_bets(settings, store, book, bankroll_rules(settings), 0)["value_bets"] == 0
 
@@ -159,3 +159,36 @@ def test_matches_kalshi_wins_titles_using_the_event():
     assert book.yes_prob(lone) is None
     stats = find_value_bets(Settings(), store, book, bankroll_rules(Settings()), 0)
     assert stats["legs_matched"] == 3
+
+
+def test_no_value_bets_once_the_game_has_started():
+    """In-game Kalshi prices move with the score; pregame odds must not be compared to them."""
+    store, _ = _book()
+    lal = _market("LAL", "Los Angeles L vs Los Angeles C Winner?", "Los Angeles L", 50, 52)
+    started = BookOdds.from_store(store)
+    started.now = datetime.now(timezone.utc) + timedelta(hours=5, minutes=1)
+    assert started.yes_prob(lal) is None
+    almost = BookOdds.from_store(store)
+    almost.now = datetime.now(timezone.utc) + timedelta(hours=4, minutes=58)
+    assert almost.yes_prob(lal) is None  # within 5 minutes of the start
+    assert BookOdds.from_store(store).yes_prob(lal) is not None
+
+
+def test_value_bet_is_never_repeated_or_made_on_stale_markets(tmp_path):
+    store, book = _book()
+    lal = _market("LAL", "Los Angeles L vs Los Angeles C Winner?", "Los Angeles L", 50, 52)
+    store.upsert_markets([{"ticker": "LAL", "event_ticker": "EV", "series_ticker": None, "category": None,
+                           "title": lal["title"], "status": "active", "is_combo": 0, "close_time": SOON,
+                           "result": None, "raw": lal}])
+    settings = Settings(log_dir=tmp_path)
+    assert find_value_bets(settings, store, book, bankroll_rules(settings), 0)["value_bets"] == 1
+    # After it settles, the same market isn't bet again.
+    store.conn.execute("UPDATE paper_bets SET status = 'lost'")
+    store.conn.commit()
+    assert find_value_bets(settings, store, BookOdds.from_store(store), bankroll_rules(settings), 0)["value_bets"] == 0
+    # A saved market the recent scans didn't refresh is ignored.
+    store.conn.execute("DELETE FROM paper_bets")
+    old = (datetime.now(timezone.utc) - timedelta(hours=2)).isoformat(timespec="seconds")
+    store.conn.execute("UPDATE markets SET updated_at = ?", (old,))
+    store.conn.commit()
+    assert find_value_bets(settings, store, BookOdds.from_store(store), bankroll_rules(settings), 0)["legs_matched"] == 0

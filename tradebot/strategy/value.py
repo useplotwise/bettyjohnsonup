@@ -3,8 +3,9 @@
 For each Kalshi market the sportsbooks have a price for (game winners for now),
 compare Kalshi's ask on each side with the books' chance. When the edge after
 Kalshi's fee is at least MIN_EDGE, record a pretend bet sized by the bankroll
-rules (paper kind "value"). These are paper-only for now: they show whether
-the sportsbook opinion finds real edges, quickly, because games settle daily.
+rules (paper kind "pregame"; the older kind "value" came from a version that
+also bet games already under way, so its results are kept apart). Only games that haven't started count (see
+odds.STOP_BEFORE_START), and each market is bet at most once.
 """
 
 import logging
@@ -21,6 +22,17 @@ from .combos import edge_at
 
 log = logging.getLogger(__name__)
 
+# Only markets the last few scans refreshed: an old saved copy can show a
+# price from before the game was decided.
+FRESH_MINUTES = 30
+
+
+def _bet_before(store: Store, ticker: str) -> bool:
+    """One value bet per market, ever: no re-betting a game after a bet settles."""
+    return store.conn.execute(
+        "SELECT 1 FROM paper_bets WHERE kind IN ('pregame', 'value', 'live') AND ticker = ? LIMIT 1", (ticker,)
+    ).fetchone() is not None
+
 
 def find_value_bets(
     settings: Settings, store: Store, book: BookOdds, rules: BankrollRules, lifetime_profit: float,
@@ -30,8 +42,8 @@ def find_value_bets(
     live = client is not None and live_enabled(settings)
     if not book.games:
         return stats
-    for market in store.leg_markets():
-        if settled_result(market):
+    for market in store.leg_markets(fresh_minutes=FRESH_MINUTES):
+        if settled_result(market) or _bet_before(store, market["ticker"]):
             continue
         p_yes = book.yes_prob(market)
         if p_yes is None:
@@ -49,7 +61,7 @@ def find_value_bets(
             contracts = contracts_for(stake.amount, cost)
             if stake.amount <= 0 or contracts <= 0:
                 continue
-            if not open_paper_bet(store, "value", market["ticker"], side, cost, contracts, prob, edge,
+            if not open_paper_bet(store, "pregame", market["ticker"], side, cost, contracts, prob, edge,
                                   {"title": market.get("title"), "yes_name": market.get("yes_sub_title")}):
                 continue
             stats["value_bets"] += 1

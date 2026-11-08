@@ -229,12 +229,18 @@ class Store:
         ).fetchall()
         return [json.loads(r[0]) for r in rows]
 
-    def leg_markets(self, limit: int = 20000) -> list[dict]:
-        """Open single (non-combo) markets, usable as combo legs."""
+    def leg_markets(self, limit: int = 20000, fresh_minutes: float | None = None) -> list[dict]:
+        """Open single (non-combo) markets, usable as combo legs.
+
+        With fresh_minutes, only markets the latest scans saw, so prices are current.
+        """
+        since = ""
+        if fresh_minutes is not None:
+            since = (datetime.now(timezone.utc) - timedelta(minutes=fresh_minutes)).isoformat(timespec="seconds")
         rows = self.conn.execute(
             "SELECT raw FROM markets WHERE is_combo = 0 AND status IN ('open', 'active') "
-            "ORDER BY updated_at DESC LIMIT ?",
-            (limit,),
+            "AND updated_at >= ? ORDER BY updated_at DESC LIMIT ?",
+            (since, limit),
         ).fetchall()
         return [json.loads(r[0]) for r in rows]
 
