@@ -174,3 +174,36 @@ def test_single_market_bet_buys_at_fresh_price_and_cancels_rest():
     result = place_live_single(LIVE, mm3, store3, "T", "yes", 0.55, 5.0, sleep=NO_SLEEP)
     assert result["status"] == "skipped" and "didn't fill" in result["reason"]
     assert bot_ledger(store3)["open"] == 0
+
+
+def _settled_live(store, pnl, settled_at=None):
+    from datetime import datetime, timezone
+    now = settled_at or datetime.now(timezone.utc).isoformat(timespec="seconds")
+    store.conn.execute(
+        "INSERT INTO paper_bets (opened_at, kind, ticker, side, price, contracts, fee, status, pnl, settled_at) "
+        "VALUES (?, 'live', 'T', 'yes', 0.5, 2, 0.02, ?, ?, ?)",
+        (now, "won" if pnl > 0 else "lost", pnl, now))
+    store.conn.commit()
+
+
+def test_daily_loss_stop_pauses_for_the_day_only():
+    from tradebot.live import real_pnl_today, safety_stop
+    store, mm = Store(":memory:"), MarketMaker()
+    _settled_live(store, -5.0)  # 25% of the $20 bot money, lost today
+    assert real_pnl_today(store) == -5.0 and "daily limit" in safety_stop(LIVE, store)
+    result = place_live_bet(LIVE, mm, store, "KXMVE-A", 0.5, 5.0, sleep=NO_SLEEP)
+    assert result["status"] == "skipped" and "paused for today" in result["reason"] and mm.rfqs == []
+    # The same loss from yesterday doesn't stop today's betting.
+    store2 = Store(":memory:")
+    _settled_live(store2, -5.0, settled_at="2020-01-01T00:00:00+00:00")
+    assert safety_stop(LIVE, store2) == ""
+
+
+def test_drawdown_stop_and_switches():
+    from tradebot.live import safety_stop
+    store = Store(":memory:")
+    _settled_live(store, -6.0, settled_at="2020-01-01T00:00:00+00:00")
+    _settled_live(store, -5.0, settled_at="2020-01-02T00:00:00+00:00")  # -11 total, past 50% of $20
+    assert "stopped" in safety_stop(LIVE, store)
+    assert safety_stop(replace(LIVE, max_drawdown_fraction=0), store) == ""
+    assert safety_stop(replace(LIVE, bot_bankroll=40), store) == ""  # -11 is under 50% of $40

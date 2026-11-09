@@ -5,7 +5,7 @@ from collections import Counter
 from datetime import datetime, timezone
 from pathlib import Path
 
-from .live import bot_ledger, live_enabled, money_available
+from .live import bot_ledger, live_enabled, money_available, real_pnl_today, safety_stop
 from .paper import paper_summary
 from .storage import Store
 from .tuning import KINDS, MIN_SETTLED, WINDOW_DAYS, Tuner
@@ -127,6 +127,10 @@ def _live_lines(store: Store, settings) -> list[str]:
         f"${ledger['in_open_bets']:.2f} in open bets, ${money_available(settings, store):.2f} free to bet.",
         f"- Bets: {ledger['open']} waiting, {ledger['settled']} finished, {ledger['won']} won. "
         f"Placed today: {ledger['bets_today']} of {settings.max_live_bets_per_day} allowed.",
+        f"- Loss stops: today ${real_pnl_today(store):+.2f} (daily limit "
+        f"${settings.max_daily_loss_fraction * settings.bot_bankroll:.2f}), total ${ledger['profit']:+.2f} "
+        f"(stop at -${settings.max_drawdown_fraction * settings.bot_bankroll:.2f}). "
+        f"{safety_stop(settings, store).capitalize() or 'Betting is allowed.'}",
         "",
     ]
 
