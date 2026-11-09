@@ -43,6 +43,8 @@ class Settings:
     rfq_checks_per_cycle: int = 1
     bot_bankroll: float = 0.0
     max_live_bets_per_day: int = 5
+    max_daily_loss_fraction: float = 0.25
+    max_drawdown_fraction: float = 0.5
     builds_per_cycle: int = 1
     builder_collection: str = "KXMVECROSSCATEGORY-R"
     builder_leg_counts: tuple[int, ...] = (2, 3, 4, 6, 8)
@@ -111,6 +113,8 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         rfq_checks_per_cycle=int(os.getenv("RFQ_CHECKS_PER_CYCLE", "1")),
         bot_bankroll=float(os.getenv("BOT_BANKROLL", "0")),
         max_live_bets_per_day=int(os.getenv("MAX_LIVE_BETS_PER_DAY", "5")),
+        max_daily_loss_fraction=float(os.getenv("MAX_DAILY_LOSS_FRACTION", "0.25")),
+        max_drawdown_fraction=float(os.getenv("MAX_DRAWDOWN_FRACTION", "0.5")),
         builds_per_cycle=int(os.getenv("BUILDS_PER_CYCLE", "1")),
         builder_collection=os.getenv("BUILDER_COLLECTION", "KXMVECROSSCATEGORY-R"),
         builder_leg_counts=tuple(

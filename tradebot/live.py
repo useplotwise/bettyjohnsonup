@@ -57,6 +57,30 @@ def bot_ledger(store: Store) -> dict:
     }
 
 
+def real_pnl_today(store: Store) -> float:
+    """Profit (negative = loss) of real bets that finished today (UTC)."""
+    today = datetime.now(timezone.utc).date().isoformat()
+    row = store.conn.execute(
+        "SELECT COALESCE(SUM(pnl), 0) FROM paper_bets WHERE kind = 'live' "
+        "AND status IN ('won', 'lost', 'void', 'sold') AND settled_at >= ?", (today,)
+    ).fetchone()
+    return round(row[0], 2)
+
+
+def safety_stop(settings: Settings, store: Store) -> str:
+    """Why real betting is paused by a loss stop, or "" when it isn't."""
+    bankroll = settings.bot_bankroll
+    profit = bot_ledger(store)["profit"]
+    if settings.max_drawdown_fraction > 0 and profit <= -settings.max_drawdown_fraction * bankroll:
+        return (f"stopped: real bets are down ${-profit:.2f}, past the "
+                f"{settings.max_drawdown_fraction:.0%} limit of ${bankroll:.2f}")
+    today = real_pnl_today(store)
+    if settings.max_daily_loss_fraction > 0 and today <= -settings.max_daily_loss_fraction * bankroll:
+        return (f"paused for today: lost ${-today:.2f} today, past the "
+                f"{settings.max_daily_loss_fraction:.0%} daily limit of ${bankroll:.2f}")
+    return ""
+
+
 def money_available(settings: Settings, store: Store) -> float:
     ledger = bot_ledger(store)
     return round(settings.bot_bankroll + ledger["profit"] - ledger["in_open_bets"], 2)
@@ -91,7 +115,10 @@ def _filled_price(client: KalshiClient, ticker: str) -> float | None:
 
 
 def _money_check(settings: Settings, store: Store, stake: float) -> tuple[float, str]:
-    """(stake allowed, reason it isn't) given the daily limit and the bot's own money."""
+    """(stake allowed, reason it isn't) given the loss stops, daily limit and the bot's own money."""
+    stopped = safety_stop(settings, store)
+    if stopped:
+        return stake, stopped
     if bot_ledger(store)["bets_today"] >= settings.max_live_bets_per_day:
         return stake, f"daily limit of {settings.max_live_bets_per_day} bets reached"
     stake = min(stake, money_available(settings, store))
