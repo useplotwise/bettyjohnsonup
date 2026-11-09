@@ -24,8 +24,8 @@ from typing import Callable
 from .config import Settings
 from .kalshi_client import KalshiClient, KalshiError
 from .paper import open_paper_bet
-from .pricing import quotes
-from .storage import Store
+from .pricing import kalshi_fee, quotes
+from .storage import Store, utcnow
 from .strategy.combos import edge_at
 from .strategy.quotes import best_yes_quote
 
@@ -44,7 +44,7 @@ def bot_ledger(store: Store) -> dict:
     """The bot's real-money record: settled profit, money in open bets, bets today."""
     rows = store.conn.execute("SELECT * FROM paper_bets WHERE kind = 'live'").fetchall()
     today = datetime.now(timezone.utc).date().isoformat()
-    settled = [r for r in rows if r["status"] in ("won", "lost", "void")]
+    settled = [r for r in rows if r["status"] in ("won", "lost", "void", "sold")]
     return {
         "profit": round(sum(r["pnl"] or 0 for r in settled), 2),
         "in_open_bets": round(
@@ -62,8 +62,8 @@ def money_available(settings: Settings, store: Store) -> float:
     return round(settings.bot_bankroll + ledger["profit"] - ledger["in_open_bets"], 2)
 
 
-def _fills(client: KalshiClient, side: str = "yes", **params) -> tuple[float, float | None]:
-    """(contracts bought, average price paid) on `side`, from Kalshi's fills."""
+def _fills(client: KalshiClient, side: str = "yes", action: str = "buy", **params) -> tuple[float, float | None]:
+    """(contracts filled, average price) for buys or sells on `side`, from Kalshi's fills."""
     try:
         fills = client.get_fills(**params).get("fills", [])
     except KalshiError as exc:
@@ -71,7 +71,7 @@ def _fills(client: KalshiClient, side: str = "yes", **params) -> tuple[float, fl
         return 0.0, None
     total = cost = 0.0
     for f in fills:
-        if (f.get("side") or "yes") != side or (f.get("action") or "buy") != "buy":
+        if (f.get("side") or "yes") != side or (f.get("action") or "buy") != action:
             continue
         count = float(f.get("count_fp") or f.get("count") or 0)
         if f.get(f"{side}_price_dollars") not in (None, ""):
@@ -152,6 +152,82 @@ def place_live_single(
     _record(settings, store, ticker, fair_prob, result, None, side=side, kind="single")
     log.warning("LIVE %s %s %s: %s", result["status"], ticker, side, result["reason"])
     return result
+
+
+def sell_live_position(
+    settings: Settings,
+    client: KalshiClient,
+    store: Store,
+    row,
+    bid: float,
+    reason: str,
+    sleep: Callable[[float], None] | None = None,
+) -> dict:
+    """Sell a single-market bet the bot owns ("cash out") with a limit order at `bid` or better.
+
+    Waits briefly, cancels whatever didn't fill, then closes the filled part in
+    the ledger. A partial fill splits the bet: the sold part is closed with its
+    profit, the rest stays open. Only ever called for the bot's own bets.
+    """
+    sleep = sleep or time.sleep
+    ticker, side = row["ticker"], row["side"]
+    result = {"status": "skipped", "reason": "", "price": None, "contracts": 0.0}
+    order = client.create_order(ticker, side, int(row["contracts"]), bid, str(uuid.uuid4()), action="sell")
+    order_id = order.get("order_id")
+    sleep(WAIT_FOR_CONFIRM / 2)
+    if order_id:
+        try:
+            client.cancel_order(order_id)  # cancel any part that didn't fill
+        except KalshiError:
+            pass  # already fully filled
+    filled, got = _fills(client, side, action="sell", order_id=order_id) if order_id else (0.0, None)
+    if filled > 0:
+        got = got or bid
+        _close_sold(store, row, int(filled), got)
+        result.update(status="sold", price=got, contracts=filled,
+                      reason=f"sold {filled:g} {side.upper()} at ${got:.2f}: {reason}")
+    else:
+        result["reason"] = f"sell order at ${bid:.2f} didn't fill"
+    store.add_decision(
+        {
+            "kind": "cashout",
+            "ticker": ticker,
+            "side": side,
+            "action": "sold" if result["status"] == "sold" else "sell_skipped",
+            "price": result["price"],
+            "contracts": result["contracts"],
+            "dry_run": False,
+            "reason": result["reason"],
+        }
+    )
+    log.warning("LIVE cash-out %s %s: %s", result["status"], ticker, result["reason"])
+    return result
+
+
+def _close_sold(store: Store, row, filled: int, price: float) -> None:
+    contracts = int(row["contracts"])
+    filled = min(filled, contracts)
+    fee_part = round(row["fee"] * filled / contracts, 4)
+    cost = row["price"] * filled + fee_part
+    pnl = round(filled * price - kalshi_fee(price, filled) - cost, 2)
+    now = utcnow()
+    with store.conn:
+        if filled >= contracts:
+            store.conn.execute(
+                "UPDATE paper_bets SET status = 'sold', pnl = ?, checked_at = ?, settled_at = ? WHERE id = ?",
+                (pnl, now, now, row["id"]),
+            )
+        else:
+            store.conn.execute(
+                "UPDATE paper_bets SET contracts = contracts - ?, fee = fee - ? WHERE id = ?",
+                (filled, fee_part, row["id"]),
+            )
+            store.conn.execute(
+                "INSERT INTO paper_bets (opened_at, kind, ticker, side, price, contracts, fee, win_prob, edge, "
+                "status, pnl, checked_at, settled_at, raw) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'sold', ?, ?, ?, ?)",
+                (row["opened_at"], row["kind"], row["ticker"], row["side"], row["price"], filled, fee_part,
+                 row["win_prob"], row["edge"], pnl, now, now, row["raw"]),
+            )
 
 
 def place_live_bet(

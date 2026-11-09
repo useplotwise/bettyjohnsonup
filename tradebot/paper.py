@@ -13,6 +13,7 @@ settles a market, records whether it won and the profit or loss after fees.
 
 import json
 import logging
+from typing import Callable
 
 from .kalshi_client import KalshiClient, KalshiError
 from .pricing import kalshi_fee, settled_result
@@ -53,8 +54,13 @@ def open_paper_bet(
     return True
 
 
-def settle_paper_bets(client: KalshiClient, store: Store, max_checks: int = 50) -> dict:
-    """Check open pretend bets (least recently checked first) and settle finished ones."""
+def settle_paper_bets(client: KalshiClient, store: Store, max_checks: int = 50,
+                      on_open: Callable | None = None) -> dict:
+    """Check open pretend bets (least recently checked first) and settle finished ones.
+
+    `on_open(row, market)` is called with the fresh market of every bet that is
+    still open, e.g. to flag a cash-out.
+    """
     stats = {"open": 0, "checked": 0, "settled": 0}
     rows = store.conn.execute(
         "SELECT * FROM paper_bets WHERE status = 'open' ORDER BY checked_at IS NOT NULL, checked_at"
@@ -84,6 +90,11 @@ def settle_paper_bets(client: KalshiClient, store: Store, max_checks: int = 50) 
         elif (market.get("status") or "").lower() in SETTLED_STATUSES:
             status, pnl = "void", 0.0  # settled with no yes/no result: stake returned
         else:
+            if on_open is not None:
+                try:
+                    on_open(row, market)
+                except Exception:  # an add-on must never stop settling
+                    log.exception("paper bet %s: add-on failed", row["ticker"])
             with store.conn:
                 store.conn.execute("UPDATE paper_bets SET checked_at = ? WHERE id = ?", (now, row["id"]))
             continue

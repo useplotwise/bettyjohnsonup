@@ -22,7 +22,8 @@ from .odds import BookOdds, refresh_odds
 from .paper import settle_paper_bets
 from .scorecard import write_scorecard
 from .storage import Store
-from .strategy.runner import bankroll_rules, check_cash_outs, evaluate_combos
+from .strategy.cashout import PaperCashOuts, live_cash_outs
+from .strategy.runner import LegLookup, bankroll_rules, check_cash_outs, evaluate_combos
 from .strategy.value import find_value_bets
 
 log = logging.getLogger("tradebot")
@@ -105,13 +106,15 @@ def run_cycle(settings: Settings, client: KalshiClient, store: Store) -> dict:
         log.exception("odds step failed")
         summary["errors"].append(f"odds: {exc}")
     book = BookOdds.from_store(store)
+    lookup = LegLookup(client, store, settings.max_leg_lookups)
 
     for name, step in (
         ("combo_picks", lambda: evaluate_combos(settings, client, store, bet_balance, lifetime_profit, book)),
         ("value_bets", lambda: find_value_bets(settings, store, book, bankroll_rules(settings), lifetime_profit,
                                               client, bet_balance)),
         ("cashouts", lambda: check_cash_outs(settings, client, store)),
-        ("paper", lambda: settle_paper_bets(client, store)),
+        ("live_cashouts", lambda: live_cash_outs(settings, client, store, lookup, book.leg_prob)),
+        ("paper", lambda: settle_paper_bets(client, store, on_open=PaperCashOuts(store, lookup, book.leg_prob))),
     ):
         try:
             summary[name] = step()

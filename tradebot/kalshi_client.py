@@ -142,13 +142,14 @@ class KalshiClient:
 
     # -- orders on single markets (signed) ----------------------------------
 
-    def create_order(self, ticker: str, side: str, count: int, price: float, client_order_id: str) -> dict:
-        """Limit order to BUY `count` contracts of `side` at no more than `price` dollars."""
+    def create_order(self, ticker: str, side: str, count: int, price: float, client_order_id: str,
+                     action: str = "buy") -> dict:
+        """Limit order to buy (at no more than `price`) or sell (at no less than `price`) `count` contracts."""
         cents = int(round(price * 100))
         body = {
             "ticker": ticker,
             "client_order_id": client_order_id,
-            "action": "buy",
+            "action": action,
             "side": side,
             "count": int(count),
             "type": "limit",
