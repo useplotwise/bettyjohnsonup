@@ -8,6 +8,7 @@ from pathlib import Path
 from .live import bot_ledger, live_enabled, money_available
 from .paper import paper_summary
 from .storage import Store
+from .tuning import KINDS, MIN_SETTLED, WINDOW_DAYS, Tuner
 
 
 def _pct(value: float | None) -> str:
@@ -38,6 +39,30 @@ def _paper_lines(store: Store) -> list[str]:
         f"{old['won']} won, pretend profit/loss ${old['pnl']:+.2f}.",
         "",
     ] + _built_by_legs(store)
+
+
+def _tuning_lines(store: Store) -> list[str]:
+    tuner = Tuner(store)
+    names = {"pick": "Combo picks", "pregame": "Single bets"}
+    lines = [f"## Self-tuning (bets finished in the last {WINDOW_DAYS} days)", ""]
+    found = False
+    for kind in KINDS:
+        for (k, bucket), g in sorted(tuner.groups.items()):
+            if k != kind:
+                continue
+            found = True
+            label = f"{names[k]}, {bucket} leg{'s' if bucket != '1' else ''}"
+            note = f"guesses scaled to {g.factor:.0%} of the original"
+            if g.paused:
+                note += f"; PAUSED (net loss ${-g.pnl:.2f} over {g.n} bets, retried when the losses age out)"
+            lines.append(
+                f"- {label}: {g.n} finished, expected to win {g.expected / g.n:.0%}, "
+                f"actually won {g.won / g.n:.0%}; {note}."
+            )
+    if not found:
+        lines.append("- Nothing finished yet, so nothing is adjusted.")
+    lines.append(f"- A group needs {MIN_SETTLED} finished bets and a net loss before it is paused.")
+    return lines + [""]
 
 
 def _built_by_legs(store: Store) -> list[str]:
@@ -132,6 +157,7 @@ def write_scorecard(
             )
         lines.append("")
     lines += _paper_lines(store)
+    lines += _tuning_lines(store)
     lines.append(
         "Fair chance multiplies each leg's market price and assumes the legs are "
         "independent. Legs from the same game often aren't, so treat it as an estimate."

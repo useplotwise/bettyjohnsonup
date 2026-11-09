@@ -3,7 +3,10 @@
 A combo pays $1 only if every leg lands on its chosen side. If the legs are
 roughly independent, its fair probability is the product of each leg's
 probability. When the combo's ask is below that (after fees), it's a candidate.
-Legs in the same game are often correlated, so treat results as estimates.
+Legs in the same game are often correlated, so treat results as estimates. For
+legs from the same game the product isn't trusted: the combo's chance is
+instead the cautious lower bound max(0, sum of chances - (legs - 1)), which is
+never above the product, so the bot doesn't claim an edge it can't back up.
 """
 
 from dataclasses import dataclass, field
@@ -22,6 +25,7 @@ class ComboEvaluation:
     edge: float | None  # expected profit per $1 staked, after fees
     legs_settled: int = 0
     missing_legs: list[str] = field(default_factory=list)
+    same_game_legs: int = 0  # legs that share a game with another leg
 
     @property
     def payout_multiple(self) -> float | None:
@@ -57,6 +61,7 @@ def evaluate_combo(
     legs = combo_legs(market)
     q = quotes(market)
     fair, settled, missing = 1.0, 0, []
+    games: dict[str, list[float]] = {}
     for ticker, side in legs:
         leg = get_leg(ticker)
         p_yes = leg_prob(leg) if leg else None
@@ -65,7 +70,19 @@ def evaluate_combo(
             continue
         if p_yes in (0.0, 1.0):
             settled += 1
-        fair *= p_yes if side == "yes" else 1 - p_yes
+        p = p_yes if side == "yes" else 1 - p_yes
+        game = leg.get("event_ticker")
+        if game:
+            games.setdefault(game, []).append(p)
+        else:
+            fair *= p
+    same_game = 0
+    for ps in games.values():
+        if len(ps) == 1:
+            fair *= ps[0]
+        else:
+            same_game += len(ps)
+            fair *= max(0.0, sum(ps) - (len(ps) - 1))
     fair_prob = None if missing or not legs else fair
     ask = q["yes_ask"]
     edge = edge_at(fair_prob, ask) if fair_prob is not None and ask else None
@@ -78,4 +95,5 @@ def evaluate_combo(
         edge=edge,
         legs_settled=settled,
         missing_legs=missing,
+        same_game_legs=same_game,
     )

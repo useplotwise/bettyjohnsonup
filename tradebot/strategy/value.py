@@ -18,6 +18,7 @@ from ..odds import BookOdds
 from ..paper import open_paper_bet
 from ..pricing import quotes, settled_result
 from ..storage import Store
+from ..tuning import Tuner
 from .combos import edge_at
 
 log = logging.getLogger(__name__)
@@ -42,6 +43,10 @@ def find_value_bets(
     live = client is not None and live_enabled(settings)
     if not book.games:
         return stats
+    tuner = Tuner(store)
+    if tuner.paused("pregame", 1):
+        log.warning("single value bets are paused: they have lost money over the last two weeks")
+        return stats
     for market in store.leg_markets(fresh_minutes=FRESH_MINUTES):
         if settled_result(market) or _bet_before(store, market["ticker"]):
             continue
@@ -50,9 +55,10 @@ def find_value_bets(
             continue
         stats["legs_matched"] += 1
         q = quotes(market)
-        for side, prob, cost in (("yes", p_yes, q["yes_ask"]), ("no", 1 - p_yes, q["no_ask"])):
+        for side, raw_prob, cost in (("yes", p_yes, q["yes_ask"]), ("no", 1 - p_yes, q["no_ask"])):
             if cost is None:
                 continue
+            prob = tuner.adjust("pregame", 1, raw_prob)  # scaled down if these bets have been overconfident
             edge = edge_at(prob, cost)
             if edge < settings.min_edge:
                 continue
@@ -61,7 +67,8 @@ def find_value_bets(
             contracts = contracts_for(stake.amount, cost)
             if stake.amount <= 0 or contracts <= 0:
                 continue
-            if not open_paper_bet(store, "pregame", market["ticker"], side, cost, contracts, prob, edge,
+            if not open_paper_bet(store, "pregame", market["ticker"], side, cost, contracts, raw_prob,
+                                  edge_at(raw_prob, cost),
                                   {"title": market.get("title"), "yes_name": market.get("yes_sub_title")}):
                 continue
             stats["value_bets"] += 1

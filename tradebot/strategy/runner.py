@@ -16,6 +16,7 @@ from ..odds import BookOdds
 from ..paper import open_paper_bet
 from ..pricing import implied_yes_prob, quotes
 from ..storage import Store
+from ..tuning import Tuner
 from .builder import build_combo
 from .cashout import should_cash_out
 from .combos import combo_legs, edge_at, evaluate_combo
@@ -79,7 +80,7 @@ def evaluate_combos(
     day_ago = (datetime.now(timezone.utc) - timedelta(days=1)).isoformat(timespec="seconds")
     stats = {"combos_evaluated": 0, "combos_priced": 0, "price_checks": 0, "quotes_received": 0,
              "combos_built": 0, "built_quoted": 0, "would_buy": 0, "needs_approval": 0,
-             "bought": 0, "live_skipped": 0}
+             "bought": 0, "live_skipped": 0, "tuned_out": 0, "paused": 0}
 
     # 1. Fair value for each combo from its legs.
     evaluated = []
@@ -149,11 +150,23 @@ def evaluate_combos(
                 stats["built_quoted"] += 1
                 evaluated.append(built)
 
-    # 3. Size anything with enough edge.
+    # 3. Size anything with enough edge. The bot's win chance is first scaled
+    # down if its picks have been overconfident (see tuning.py), and kinds of
+    # combo that keep losing are paused. Paper bets keep the raw guess.
+    tuner = Tuner(store)
     for ev in evaluated:
-        if ev.edge is None or ev.edge < settings.min_edge:
+        if ev.edge is None or ev.ask is None:
             continue
-        stake = size_bet(rules, ev.fair_prob, ev.edge, lifetime_profit, balance)
+        legs = len(ev.legs)
+        fair = tuner.adjust("pick", legs, ev.fair_prob)
+        edge = edge_at(fair, ev.ask)
+        if edge < settings.min_edge:
+            stats["tuned_out"] += int(ev.edge >= settings.min_edge)
+            continue
+        if tuner.paused("pick", legs):
+            stats["paused"] += 1
+            continue
+        stake = size_bet(rules, fair, edge, lifetime_profit, balance)
         if stake.amount <= 0:
             log.info("skip %s: %s", ev.ticker, stake.reason)
             continue
@@ -162,32 +175,33 @@ def evaluate_combos(
             continue
         stats[action] += 1
         contracts = contracts_for(stake.amount, ev.ask)
-        if action == "would_buy" and not live_enabled(settings):
+        if action == "would_buy":
+            # Also in live mode: these pretend bets keep feeding the self-tuning.
             open_paper_bet(store, "pick", ev.ticker, "yes", ev.ask, contracts, ev.fair_prob, ev.edge,
-                           {"legs": ev.legs})
+                           {"legs": ev.legs, "tuned_prob": round(fair, 4), "same_game": ev.same_game_legs})
         store.add_decision(
             {
                 "kind": "combo",
                 "ticker": ev.ticker,
                 "side": "yes",
                 "action": action,
-                "win_prob": ev.fair_prob,
+                "win_prob": fair,
                 "price": ev.ask,
-                "edge": ev.edge,
+                "edge": edge,
                 "stake": stake.amount,
                 "contracts": contracts,
                 "dry_run": settings.dry_run,
-                "reason": f"{len(ev.legs)} legs, pays {ev.payout_multiple:.1f}x, {stake.reason}",
-                "raw": {"legs": ev.legs, "bid": ev.bid},
+                "reason": f"{legs} legs, pays {ev.payout_multiple:.1f}x, {stake.reason}",
+                "raw": {"legs": ev.legs, "bid": ev.bid, "raw_prob": round(ev.fair_prob, 4)},
             }
         )
         log.info(
-            "%s %s: %d legs, fair %.2f%% vs ask %.2f%%, edge %.0f%%, stake $%.2f",
-            action, ev.ticker, len(ev.legs), ev.fair_prob * 100, ev.ask * 100, ev.edge * 100, stake.amount,
+            "%s %s: %d legs, fair %.2f%% (raw %.2f%%) vs ask %.2f%%, edge %.0f%%, stake $%.2f",
+            action, ev.ticker, legs, fair * 100, ev.fair_prob * 100, ev.ask * 100, edge * 100, stake.amount,
         )
         if action == "would_buy" and live_enabled(settings):
             try:
-                result = place_live_bet(settings, client, store, ev.ticker, ev.fair_prob, stake.amount, ev.legs)
+                result = place_live_bet(settings, client, store, ev.ticker, fair, stake.amount, ev.legs)
             except KalshiError as exc:
                 log.warning("LIVE bet on %s failed: %s", ev.ticker, exc)
                 result = {"status": "error"}
