@@ -6,6 +6,8 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
+from .weather import SERIES
+
 KALSHI_BASE_URLS = {
     "demo": "https://demo-api.kalshi.co/trade-api/v2",
     "prod": "https://api.elections.kalshi.com/trade-api/v2",
@@ -66,6 +68,8 @@ class Settings:
     kalshi_game_series: tuple[str, ...] = (
         "KXNBAGAME", "KXNFLGAME", "KXNHLGAME", "KXNCAAFGAME", "KXNCAAMBGAME", "KXEPLGAME",
     )
+    # Daily temperature series (high and low) read in full every scan.
+    kalshi_weather_series: tuple[str, ...] = tuple(SERIES)
 
     @property
     def kalshi_base_url(self) -> str:
@@ -138,6 +142,9 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         ),
         odds_regions=os.getenv("ODDS_REGIONS", "eu"),
         odds_refresh_minutes=float(os.getenv("ODDS_REFRESH_MINUTES", "720")),
+        kalshi_weather_series=tuple(
+            s.strip() for s in os.getenv("KALSHI_WEATHER_SERIES", ",".join(SERIES)).split(",") if s.strip()
+        ),
         kalshi_game_series=tuple(
             s.strip() for s in os.getenv(
                 "KALSHI_GAME_SERIES",

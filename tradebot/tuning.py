@@ -1,7 +1,7 @@
 """Self-tuning: the bot learns from its own finished pretend bets.
 
 Every cycle it looks at bets that finished in the last WINDOW_DAYS days and
-groups them by kind (combo "pick" or single "pregame" bet) and number of legs
+groups them by kind (combo "pick", single "pregame" or "weather" bet) and number of legs
 (1, 2, 3-4, 5+). Two adjustments follow:
 
 1. Overconfidence. If a group has won less often than the bot said it would,
@@ -25,7 +25,7 @@ WINDOW_DAYS = 14
 MIN_SETTLED = 30
 PRIOR = 30
 MIN_FACTOR = 0.25
-KINDS = ("pick", "pregame")
+KINDS = ("pick", "pregame", "weather")
 
 
 def leg_bucket(legs: int) -> str:
@@ -62,7 +62,7 @@ class Tuner:
         since = (now - timedelta(days=WINDOW_DAYS)).isoformat(timespec="seconds")
         rows = store.conn.execute(
             "SELECT kind, win_prob, status, pnl, COALESCE(json_array_length(raw, '$.legs'), 1) AS legs "
-            "FROM paper_bets WHERE kind IN (?, ?) AND status IN ('won', 'lost') "
+            "FROM paper_bets WHERE kind IN (?, ?, ?) AND status IN ('won', 'lost') "
             "AND win_prob IS NOT NULL AND settled_at >= ?",
             (*KINDS, since),
         ).fetchall()

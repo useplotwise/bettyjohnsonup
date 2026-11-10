@@ -19,6 +19,8 @@ from .config import Settings, load_settings
 from .kalshi_client import KalshiClient, load_private_key
 from .live import bot_ledger, live_enabled
 from .odds import BookOdds, refresh_odds
+from .strategy.weather_bets import find_weather_bets
+from .weather import Forecasts, refresh_forecasts
 from .paper import settle_paper_bets
 from .scorecard import write_scorecard
 from .storage import Store
@@ -56,7 +58,7 @@ def run_cycle(settings: Settings, client: KalshiClient, store: Store) -> dict:
     try:
         markets = collect_markets(
             client, store, settings.max_markets_per_scan, settings.max_combos_per_scan,
-            settings.kalshi_game_series,
+            settings.kalshi_game_series + settings.kalshi_weather_series,
         )
         summary["markets"] = len(markets)
         summary["combos"] = sum(m["is_combo"] for m in markets)
@@ -106,12 +108,20 @@ def run_cycle(settings: Settings, client: KalshiClient, store: Store) -> dict:
         log.exception("odds step failed")
         summary["errors"].append(f"odds: {exc}")
     book = BookOdds.from_store(store)
+    try:
+        summary["weather_forecasts"] = refresh_forecasts(store)
+    except Exception as exc:
+        log.exception("weather forecast step failed")
+        summary["errors"].append(f"weather forecasts: {exc}")
+    forecasts = Forecasts.from_store(store)
     lookup = LegLookup(client, store, settings.max_leg_lookups)
 
     for name, step in (
         ("combo_picks", lambda: evaluate_combos(settings, client, store, bet_balance, lifetime_profit, book)),
         ("value_bets", lambda: find_value_bets(settings, store, book, bankroll_rules(settings), lifetime_profit,
                                               client, bet_balance)),
+        ("weather_bets", lambda: find_weather_bets(settings, store, forecasts, bankroll_rules(settings),
+                                                   lifetime_profit)),
         ("cashouts", lambda: check_cash_outs(settings, client, store)),
         ("live_cashouts", lambda: live_cash_outs(settings, client, store, lookup, book.leg_prob)),
         ("paper", lambda: settle_paper_bets(client, store, on_open=PaperCashOuts(store, lookup, book.leg_prob))),
