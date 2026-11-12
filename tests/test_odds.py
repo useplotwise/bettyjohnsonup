@@ -192,3 +192,18 @@ def test_value_bet_is_never_repeated_or_made_on_stale_markets(tmp_path):
     store.conn.execute("UPDATE markets SET updated_at = ?", (old,))
     store.conn.commit()
     assert find_value_bets(settings, store, BookOdds.from_store(store), bankroll_rules(settings), 0)["legs_matched"] == 0
+
+
+def test_one_value_bet_per_game_not_per_team(tmp_path):
+    """Live data showed the bot betting both teams of one game (same outcome twice)."""
+    store, book = _book()
+    lal = _market("LAL", "Los Angeles L vs Los Angeles C Winner?", "Los Angeles L", 50, 52, "EVGAME")
+    lac = _market("LAC", "Los Angeles L vs Los Angeles C Winner?", "Los Angeles C", 40, 42, "EVGAME")
+    store.upsert_markets([{"ticker": m["ticker"], "event_ticker": "EVGAME", "series_ticker": None,
+                           "category": None, "title": m["title"], "status": "active", "is_combo": 0,
+                           "close_time": SOON, "result": None, "raw": m} for m in (lal, lac)])
+    settings = Settings(log_dir=tmp_path)
+    stats = find_value_bets(settings, store, book, bankroll_rules(settings), 0)
+    bets = store.conn.execute("SELECT ticker FROM paper_bets").fetchall()
+    assert len(bets) <= 1, [b[0] for b in bets]
+    assert stats["value_bets"] == len(bets)

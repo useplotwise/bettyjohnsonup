@@ -28,10 +28,13 @@ log = logging.getLogger(__name__)
 FRESH_MINUTES = 30
 
 
-def _bet_before(store: Store, ticker: str) -> bool:
-    """One value bet per market, ever: no re-betting a game after a bet settles."""
+def _bet_before(store: Store, ticker: str, event: str) -> bool:
+    """One value bet per game, ever. A game has one market per team ("Lakers wins", "Clippers wins"),
+    and both can look cheap: betting each one is the same bet twice, so the whole game counts once."""
     return store.conn.execute(
-        "SELECT 1 FROM paper_bets WHERE kind IN ('pregame', 'value', 'live') AND ticker = ? LIMIT 1", (ticker,)
+        "SELECT 1 FROM paper_bets WHERE kind IN ('pregame', 'value', 'live') "
+        "AND (ticker = ? OR ticker LIKE ?) LIMIT 1",
+        (ticker, event + "-%"),
     ).fetchone() is not None
 
 
@@ -48,7 +51,8 @@ def find_value_bets(
         log.warning("single value bets are paused: they have lost money over the last two weeks")
         return stats
     for market in store.leg_markets(fresh_minutes=FRESH_MINUTES):
-        if settled_result(market) or _bet_before(store, market["ticker"]):
+        event = market.get("event_ticker") or market["ticker"]
+        if settled_result(market) or _bet_before(store, market["ticker"], event):
             continue
         p_yes = book.yes_prob(market)
         if p_yes is None:
