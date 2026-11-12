@@ -30,7 +30,7 @@ HEADERS = {"User-Agent": "tradebot-paper-trading", "Accept": "application/geo+js
 REFRESH_MINUTES = 90
 MIN_HOURS = 23  # hourly forecast points needed for a day to count
 # Typical forecast error (degrees F) by how many days ahead the day is.
-SIGMA = {1: 2.5, 2: 3.0, 3: 3.5}
+SIGMA = {1: 1.8, 2: 2.3, 3: 2.8}
 
 # series -> (city, "high" or "low")
 SERIES = {
