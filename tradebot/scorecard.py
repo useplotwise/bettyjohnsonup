@@ -16,8 +16,8 @@ def _pct(value: float | None) -> str:
 
 
 def _paper_lines(store: Store) -> list[str]:
-    picks, watch, built, value, old, weather = (paper_summary(store, k)
-                                                for k in ("pick", "watch", "built", "pregame", "value", "weather"))
+    picks, watch, built, value, old, weather, today = (
+        paper_summary(store, k) for k in ("pick", "watch", "built", "pregame", "value", "weather", "weather_today"))
     return [
         "## Paper trading (pretend bets, all time)",
         "",
@@ -39,6 +39,9 @@ def _paper_lines(store: Store) -> list[str]:
         f"{weather['settled']} finished, {weather['won']} won. Pretend profit/loss: ${weather['pnl']:+.2f} "
         f"on ${weather['staked']:.2f} staked. Forecast said {_pct(weather['expected_win_rate'])}, "
         f"actually won {_pct(weather['actual_win_rate'])}.",
+        f"- Same-day thermometer bets (today's airport readings already settle the market, Kalshi's price "
+        f"lags): {today['open']} waiting, {today['settled']} finished, {today['won']} won. "
+        f"Pretend profit/loss: ${today['pnl']:+.2f} on ${today['staked']:.2f} staked.",
         f"- Old single bets (retired: that version also bet games already under way): {old['settled']} finished, "
         f"{old['won']} won, pretend profit/loss ${old['pnl']:+.2f}.",
         "",
@@ -62,7 +65,8 @@ def _cashout_lines(store: Store) -> list[str]:
 
 def _tuning_lines(store: Store) -> list[str]:
     tuner = Tuner(store)
-    names = {"pick": "Combo picks", "pregame": "Single bets", "weather": "Weather bets"}
+    names = {"pick": "Combo picks", "pregame": "Single bets", "weather": "Weather bets",
+             "weather_today": "Same-day thermometer bets"}
     lines = [f"## Self-tuning (bets finished in the last {WINDOW_DAYS} days)", ""]
     found = False
     for kind in KINDS:
