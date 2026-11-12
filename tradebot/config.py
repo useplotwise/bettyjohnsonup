@@ -45,6 +45,11 @@ class Settings:
     rfq_checks_per_cycle: int = 1
     bot_bankroll: float = 0.0
     max_live_bets_per_day: int = 5
+    # Real-money guard rails, on top of the bet sizing rules:
+    # every real bet is at most LIVE_MAX_STAKE dollars (the $1 test stage by default),
+    # and single-market bets stay pretend unless LIVE_SINGLES is on (combo picks only).
+    live_max_stake: float = 1.0
+    live_singles: bool = False
     max_daily_loss_fraction: float = 0.25
     max_drawdown_fraction: float = 0.5
     builds_per_cycle: int = 1
@@ -117,6 +122,8 @@ def load_settings(env_file: str | None = ".env") -> Settings:
         rfq_checks_per_cycle=int(os.getenv("RFQ_CHECKS_PER_CYCLE", "1")),
         bot_bankroll=float(os.getenv("BOT_BANKROLL", "0")),
         max_live_bets_per_day=int(os.getenv("MAX_LIVE_BETS_PER_DAY", "5")),
+        live_max_stake=float(os.getenv("LIVE_MAX_STAKE", "1")),
+        live_singles=_bool(os.getenv("LIVE_SINGLES"), False),
         max_daily_loss_fraction=float(os.getenv("MAX_DAILY_LOSS_FRACTION", "0.25")),
         max_drawdown_fraction=float(os.getenv("MAX_DRAWDOWN_FRACTION", "0.5")),
         builds_per_cycle=int(os.getenv("BUILDS_PER_CYCLE", "1")),

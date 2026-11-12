@@ -8,7 +8,7 @@ from tradebot.storage import Store
 from tradebot.strategy.runner import evaluate_combos
 
 LIVE = Settings(dry_run=False, bot_bankroll=20, kalshi_api_key_id="k", kalshi_private_key_path="p",
-                builds_per_cycle=0, rfq_checks_per_cycle=0)
+                builds_per_cycle=0, rfq_checks_per_cycle=0, live_max_stake=20)
 NO_SLEEP = lambda s: None  # noqa: E731
 
 
@@ -207,3 +207,39 @@ def test_drawdown_stop_and_switches():
     assert "stopped" in safety_stop(LIVE, store)
     assert safety_stop(replace(LIVE, max_drawdown_fraction=0), store) == ""
     assert safety_stop(replace(LIVE, bot_bankroll=40), store) == ""  # -11 is under 50% of $40
+
+
+def test_first_live_stage_is_one_dollar_by_default():
+    store, mm = Store(":memory:"), MarketMaker()
+    one = replace(LIVE, live_max_stake=Settings().live_max_stake)
+    assert one.live_max_stake == 1.0
+    result = place_live_bet(one, mm, store, "KXMVE-A", 0.5, 5.0, sleep=NO_SLEEP)
+    assert mm.rfqs == [("KXMVE-A", 1.0)] and result["stake"] == 1.0
+
+
+def test_single_bets_stay_pretend_unless_switched_on(tmp_path):
+    from tradebot.odds import BookOdds
+    from tradebot.strategy.runner import bankroll_rules
+    from tradebot.strategy.value import find_value_bets
+
+    calls = []
+    monkey_live = lambda *a, **k: calls.append(a) or {"status": "bought"}  # noqa: E731
+    import tradebot.strategy.value as value
+    original = value.place_live_single
+    value.place_live_single = monkey_live
+    try:
+        settings = replace(LIVE, log_dir=tmp_path)
+        assert not settings.live_singles
+        book = BookOdds([])
+        book.games = ["x"]
+        book.yes_prob = lambda m: 0.60
+        store = Store(":memory:")
+        market = {"ticker": "KXNBAGAME-26NOV12LALLAC-LAL", "event_ticker": "KXNBAGAME-26NOV12LALLAC",
+                  "status": "active", "title": "Lakers", "yes_bid_dollars": "0.4800", "yes_ask_dollars": "0.5000"}
+        store.upsert_markets([{"ticker": market["ticker"], "event_ticker": market["event_ticker"],
+                               "series_ticker": None, "category": None, "title": "Lakers", "status": "active",
+                               "is_combo": 0, "close_time": None, "result": None, "raw": market}])
+        stats = find_value_bets(settings, store, book, bankroll_rules(settings), 0, client=object())
+        assert stats["value_bets"] == 1 and stats["bought"] == 0 and calls == []
+    finally:
+        value.place_live_single = original
