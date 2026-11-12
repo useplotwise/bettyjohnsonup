@@ -5,7 +5,8 @@ each pick the bot would make, it:
 
 1. Checks the bot's own money: BOT_BANKROLL plus its settled profit, minus what
    is tied up in its open bets. It never touches the rest of your balance.
-2. Checks the daily limit (MAX_LIVE_BETS_PER_DAY).
+2. Checks the daily limit (MAX_LIVE_BETS_PER_DAY) and caps the stake at
+   LIVE_MAX_STAKE ($1 by default, for the first test stage).
 3. Asks market makers for a fresh price for exactly the stake.
 4. Accepts the best quote only if it still clears MIN_EDGE at that price.
 5. Waits for the maker to confirm, then records the bet (kind "live" in the
@@ -121,9 +122,10 @@ def _money_check(settings: Settings, store: Store, stake: float) -> tuple[float,
         return stake, stopped
     if bot_ledger(store)["bets_today"] >= settings.max_live_bets_per_day:
         return stake, f"daily limit of {settings.max_live_bets_per_day} bets reached"
-    stake = min(stake, money_available(settings, store))
-    if stake < settings.min_stake:
-        return stake, f"bot money left (${stake:.2f}) is below the ${settings.min_stake:.0f} minimum"
+    stake = min(stake, settings.live_max_stake, money_available(settings, store))
+    minimum = min(settings.min_stake, settings.live_max_stake)
+    if stake < minimum:
+        return stake, f"bot money left (${stake:.2f}) is below the ${minimum:.2f} minimum"
     return stake, ""
 
 

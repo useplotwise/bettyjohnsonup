@@ -104,6 +104,8 @@ Real betting is off unless both switches are set in `.env` on the server:
 DRY_RUN=false
 BOT_BANKROLL=20          # dollars the bot may use; it never touches the rest of your balance
 MAX_LIVE_BETS_PER_DAY=5
+LIVE_MAX_STAKE=1          # every real bet is at most this; start at $1, raise to 5 after the test
+LIVE_SINGLES=false        # only combo picks go live; single game bets stay pretend
 ```
 
 Then `systemctl restart tradebot`. For each pick, the bot gets a fresh quote for

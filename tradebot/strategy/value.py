@@ -43,7 +43,8 @@ def find_value_bets(
     client=None, balance: float | None = None,
 ) -> dict:
     stats = {"legs_matched": 0, "value_bets": 0, "bought": 0}
-    live = client is not None and live_enabled(settings)
+    # Real single bets need their own switch; by default only combo picks go live.
+    live = client is not None and live_enabled(settings) and settings.live_singles
     if not book.games:
         return stats
     tuner = Tuner(store)
