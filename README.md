@@ -78,6 +78,14 @@ Each cycle the bot:
    every quoted combo the bot built becomes a 1-contract "built" bet.
    Up to 50 open pretend bets are checked per cycle and settled against
    Kalshi's real results, after fees.
+4b. Same-day thermometer bets (`tradebot/strategy/weather_today.py`, paper kind
+   "weather_today"): every 10 minutes the bot reads today's temperatures from
+   the exact station each Kalshi temperature market settles on (free NWS feed,
+   `tradebot/observations.py`). When the readings have already settled a
+   market (for example the high has hit 78F, so "75 or below" is lost) by at
+   least 1.5F, and Kalshi's price still leaves `MIN_EDGE`, it records a pretend
+   bet at a 99% win chance. One bet per city-day, standard stake cap, its own
+   self-tuning group. Pretend bets only.
 5. Records every decision in the `decisions` table and rewrites today's
    scorecard at `logs/scorecard-YYYY-MM-DD.md`, including all-time paper
    profit/loss and how often the bot's win chances came true.

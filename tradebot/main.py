@@ -20,6 +20,8 @@ from .kalshi_client import KalshiClient, load_private_key
 from .live import bot_ledger, live_enabled
 from .odds import BookOdds, refresh_odds
 from .strategy.weather_bets import find_weather_bets
+from .strategy.weather_today import find_today_bets
+from .observations import Observations, refresh_observations
 from .weather import Forecasts, refresh_forecasts
 from .paper import settle_paper_bets
 from .scorecard import write_scorecard
@@ -114,6 +116,12 @@ def run_cycle(settings: Settings, client: KalshiClient, store: Store) -> dict:
         log.exception("weather forecast step failed")
         summary["errors"].append(f"weather forecasts: {exc}")
     forecasts = Forecasts.from_store(store)
+    try:
+        summary["weather_readings"] = refresh_observations(store)
+    except Exception as exc:
+        log.exception("weather readings step failed")
+        summary["errors"].append(f"weather readings: {exc}")
+    observations = Observations.from_store(store)
     lookup = LegLookup(client, store, settings.max_leg_lookups)
 
     for name, step in (
@@ -122,6 +130,8 @@ def run_cycle(settings: Settings, client: KalshiClient, store: Store) -> dict:
                                               client, bet_balance)),
         ("weather_bets", lambda: find_weather_bets(settings, store, forecasts, bankroll_rules(settings),
                                                    lifetime_profit)),
+        ("today_bets", lambda: find_today_bets(settings, store, observations, bankroll_rules(settings),
+                                               lifetime_profit)),
         ("cashouts", lambda: check_cash_outs(settings, client, store)),
         ("live_cashouts", lambda: live_cash_outs(settings, client, store, lookup, book.leg_prob)),
         ("paper", lambda: settle_paper_bets(client, store, on_open=PaperCashOuts(store, lookup, book.leg_prob))),
