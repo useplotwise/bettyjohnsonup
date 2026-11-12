@@ -88,10 +88,10 @@ def _store(markets):
 def test_best_bucket_is_bet_once_per_day(tmp_path):
     f = Forecasts({"nyc": _hourly(high=68)})
     markets = [
-        _m("KXHIGHNY-26NOV10-B67.5", "67 to 68", "between", 67, 68, ask=0.20, bid=0.18),  # forecast ~31%
-        _m("KXHIGHNY-26NOV10-T68", "69 or above", "greater", 68, None, ask=0.40, bid=0.38),  # forecast ~42%
+        _m("KXHIGHNY-26NOV10-B67.5", "67 to 68", "between", 67, 68, ask=0.30, bid=0.28),  # forecast ~41%
+        _m("KXHIGHNY-26NOV10-T68", "69 or above", "greater", 68, None, ask=0.28, bid=0.26),  # forecast ~39%
         _m("KXHIGHNY-26NOV10-T61", "60 or below", "less", None, 61, ask=0.50, bid=0.48),  # forecast ~0%: gap rejected
-        _m("KXHIGHNY-26NOV12-T68", "69 or above", "greater", 68, None, ask=0.40, bid=0.38),  # 3 days ahead, ok
+        _m("KXHIGHNY-26NOV12-T68", "69 or above", "greater", 68, None, ask=0.33, bid=0.31),  # 3 days ahead, ok
         _m("KXHIGHBOS-26NOV10-T68", "69 or above", "greater", 68, None),  # series unknown: ignored
     ]
     store = _store(markets)
@@ -109,3 +109,14 @@ def test_no_forecast_no_bets(tmp_path):
     store = _store([_m("KXHIGHNY-26NOV10-T68", "69 or above", "greater", 68, None)])
     settings = Settings(log_dir=tmp_path)
     assert find_weather_bets(settings, store, Forecasts({}), bankroll_rules(settings), 0)["weather_bets"] == 0
+
+
+def test_cheap_long_shot_tails_are_not_bet(tmp_path):
+    """The first real results: buying 5-15 cent tails the old wide model liked lost 23 of 25 times."""
+    f = Forecasts({"nyc": _hourly(high=68)})
+    store = _store([
+        _m("KXHIGHNY-26NOV10-T70", "71 or above", "greater", 70, None, ask=0.10, bid=0.08),
+        _m("KXHIGHNY-26NOV11-T70", "71 or above", "greater", 70, None, ask=0.14, bid=0.12),
+    ])
+    settings = Settings(log_dir=tmp_path)
+    assert find_weather_bets(settings, store, f, bankroll_rules(settings), 0)["weather_bets"] == 0

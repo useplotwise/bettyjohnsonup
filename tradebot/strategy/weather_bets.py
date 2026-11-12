@@ -23,7 +23,7 @@ from .combos import edge_at
 log = logging.getLogger(__name__)
 
 FRESH_MINUTES = 30
-MAX_GAP = 0.30
+MAX_GAP = 0.15
 
 
 def _bet_before(store: Store, ticker: str) -> bool:
