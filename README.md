@@ -99,6 +99,16 @@ Read today's scorecard on the server:
 cat /home/tradebot/bettyjohnsonup/logs/scorecard-$(date -u +%F).md
 ```
 
+## Is there an edge?
+
+`sudo -u tradebot .venv/bin/python -m tradebot.edge_report` (run in the bot's folder) sorts
+every finished pretend bet into groups (price, number of legs, sport, the other
+side of combo quotes, and each other kind of bet) and prints what $1 on every
+bet in a group would have made, with a plus-or-minus range for luck. A group is
+marked `WINS` only if it has at least 100 bets and still wins after that range.
+It only reads the database. With many groups, one can look good by chance, so a
+`WINS` line is a reason to watch that group, not yet to bet it.
+
 ## Turning on real bets
 
 Real betting is off unless both switches are set in `.env` on the server:
@@ -118,7 +128,7 @@ Kalshi's own record of the trade (the fills). The bet is recorded with the side
 and price Kalshi reports. If that is anything other than "bought YES at about
 the quoted price", or Kalshi shows no trade, all real betting halts and the
 scorecard says why. After someone has checked, clear the halt with
-`sudo -u tradebot python3 -m tradebot.resume_live` (run in the bot's folder).
+`sudo -u tradebot .venv/bin/python -m tradebot.resume_live` (run in the bot's folder).
 Bets over $500 are never placed automatically. Cash-outs are still recommendations only (logged as
 `would_sell`); the bot does not sell positions yet. To stop real betting, set
 `DRY_RUN=true` and restart.
