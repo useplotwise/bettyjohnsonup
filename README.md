@@ -99,6 +99,16 @@ Read today's scorecard on the server:
 cat /home/tradebot/bettyjohnsonup/logs/scorecard-$(date -u +%F).md
 ```
 
+## Is there an edge?
+
+`sudo -u tradebot python3 -m tradebot.edge_report` (run in the bot's folder) sorts
+every finished pretend bet into groups (price, number of legs, sport, the other
+side of combo quotes, and each other kind of bet) and prints what $1 on every
+bet in a group would have made, with a plus-or-minus range for luck. A group is
+marked `WINS` only if it has at least 100 bets and still wins after that range.
+It only reads the database. With many groups, one can look good by chance, so a
+`WINS` line is a reason to watch that group, not yet to bet it.
+
 ## Turning on real bets
 
 Real betting is off unless both switches are set in `.env` on the server:
