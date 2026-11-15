@@ -1,7 +1,13 @@
+import tempfile
 from dataclasses import replace
+from pathlib import Path
+
+import pytest
 
 from tradebot.config import Settings
-from tradebot.live import bot_ledger, live_enabled, money_available, place_live_bet
+from tradebot.kalshi_client import KalshiError
+from tradebot.live import (bot_ledger, halted, live_enabled, money_available, place_live_bet, resume_live,
+                           safety_stop)
 from tradebot.paper import settle_paper_bets
 from tradebot.scorecard import write_scorecard
 from tradebot.storage import Store
@@ -13,31 +19,49 @@ NO_SLEEP = lambda s: None  # noqa: E731
 
 
 class MarketMaker:
-    """Fake Kalshi: quotes YES at `price`, confirms (or not) when accepted."""
+    """Fake Kalshi: sells YES at `price` (by bidding 1 - price for NO), confirms (or not) when accepted.
 
-    def __init__(self, price="0.3000", confirm=True, fill_price="0.2900"):
-        self.price, self.confirm, self.fill_price = price, confirm, fill_price
+    `fill` is what Kalshi's trade record shows once the trade goes through. By default
+    it is the right thing: `size` YES contracts bought at `fill_price`.
+    """
+
+    def __init__(self, price="0.3000", confirm=True, fill_price="0.2900", size="9.00", fill="right",
+                 old_fills=()):
+        self.price, self.confirm, self.fill_price, self.size, self.fill = price, confirm, fill_price, size, fill
         self.accepted, self.deleted, self.rfqs = [], [], []
+        self.fills = list(old_fills)
 
     def create_rfq(self, ticker, target):
         self.rfqs.append((ticker, target))
         return "rfq1"
 
     def get_rfq_quotes(self, rfq_id):
-        return [{"id": "q1", "status": "open", "yes_bid_dollars": self.price, "no_bid_dollars": "0"}]
+        quote = {"id": "q1", "status": "open", "yes_bid_dollars": "0.0000",
+                 "no_bid_dollars": f"{1 - float(self.price):.4f}"}
+        if self.size is not None:
+            quote["no_contracts_fp"] = self.size
+        return [quote]
 
     def accept_quote(self, rfq_id, quote_id, side):
         self.accepted.append((rfq_id, quote_id, side))
+        if not self.confirm or self.fill is None:
+            return
+        n = len(self.fills) + 1
+        if self.fill == "right":
+            self.fills.append({"fill_id": f"f{n}", "side": "yes", "action": "buy", "count_fp": self.size,
+                               "yes_price_dollars": self.fill_price})
+        else:
+            self.fills.append({"fill_id": f"f{n}", **self.fill})
 
     def get_quote(self, rfq_id, quote_id):
         status = "executed" if self.confirm else "accepted"
-        return {"id": quote_id, "status": status, "yes_contracts_fp": "16.00"}
+        return {"id": quote_id, "status": status}
 
     def delete_rfq(self, rfq_id):
         self.deleted.append(rfq_id)
 
     def get_fills(self, **params):
-        return {"fills": [{"side": "yes", "action": "buy", "count_fp": "16.00", "yes_price_dollars": self.fill_price}]}
+        return {"fills": list(self.fills)}
 
     def get_market(self, ticker):
         return {"ticker": ticker, "status": "settled", "result": "yes"}
@@ -53,16 +77,84 @@ def test_live_needs_both_switches():
 def test_buys_at_a_good_fresh_price_and_records_the_fill():
     store, mm = Store(":memory:"), MarketMaker()
     result = place_live_bet(LIVE, mm, store, "KXMVE-A", 0.5, 5.0, [("L1", "yes")], sleep=NO_SLEEP)
-    assert result["status"] == "bought" and result["price"] == 0.29 and result["contracts"] == 16
-    assert mm.accepted == [("rfq1", "q1", "yes")] and mm.rfqs == [("KXMVE-A", 5.0)] and mm.deleted
+    assert result["status"] == "bought" and result["price"] == 0.29 and result["contracts"] == 9
+    # Buying YES means accepting the maker's NO bid.
+    assert mm.accepted == [("rfq1", "q1", "no")] and mm.rfqs == [("KXMVE-A", 5.0)] and mm.deleted
+    [bet] = store.conn.execute("SELECT * FROM paper_bets").fetchall()
+    assert (bet["kind"], bet["side"], bet["price"], bet["contracts"]) == ("live", "yes", 0.29, 9)
     ledger = bot_ledger(store)
     assert ledger["open"] == 1 and ledger["bets_today"] == 1
-    assert money_available(LIVE, store) == round(20 - (16 * 0.29 + 0.24), 2)
+    assert money_available(LIVE, store) == round(20 - (9 * 0.29 + 0.13), 2)
     [d] = store.decisions_since("2000-01-01")
     assert d["action"] == "bought" and d["dry_run"] == 0
+    assert safety_stop(LIVE, store) == ""
 
     settle_paper_bets(mm, store)
-    assert bot_ledger(store)["profit"] == round(16 - 16 * 0.29 - 0.24, 2)
+    assert bot_ledger(store)["profit"] == round(9 - 9 * 0.29 - 0.13, 2)
+
+
+def test_a_maker_who_only_bids_for_yes_is_never_accepted():
+    """The quote behind all 16 wrong bets: the maker pays $0.30 for YES and sells none."""
+    class OnlyBuysYes(MarketMaker):
+        def get_rfq_quotes(self, rfq_id):
+            return [{"id": "q1", "status": "open", "yes_bid_dollars": "0.3000", "yes_contracts_fp": "6.99",
+                     "no_bid_dollars": "0.0000"}]
+
+    store, mm = Store(":memory:"), OnlyBuysYes()
+    result = place_live_bet(LIVE, mm, store, "KXMVE-A", 0.5, 5.0, sleep=NO_SLEEP)
+    assert result["status"] == "skipped" and "no quote that sells YES" in result["reason"]
+    assert mm.accepted == [] and bot_ledger(store)["open"] == 0
+
+
+def test_wrong_side_fill_is_recorded_as_it_is_and_stops_all_real_betting():
+    wrong = {"side": "no", "action": "buy", "count_fp": "9.00", "no_price_dollars": "0.7100"}
+    store, mm = Store(":memory:"), MarketMaker(fill=wrong)
+    result = place_live_bet(LIVE, mm, store, "KXMVE-A", 0.6, 5.0, sleep=NO_SLEEP)
+    assert "PROBLEM" in result["reason"] and "buy NO" in result["reason"]
+    [bet] = store.conn.execute("SELECT * FROM paper_bets").fetchall()
+    assert (bet["side"], bet["price"], bet["contracts"]) == ("no", 0.71, 9)  # what Kalshi says we hold
+    assert bet["win_prob"] == pytest.approx(0.4)
+    assert "stopped until you clear it" in safety_stop(LIVE, store)
+
+    # Nothing else is bet, combo or single, until a person clears the halt.
+    again = place_live_bet(LIVE, mm, store, "KXMVE-B", 0.6, 5.0, sleep=NO_SLEEP)
+    assert again["status"] == "skipped" and "stopped until you clear it" in again["reason"]
+    assert len(mm.rfqs) == 1
+    text = write_scorecard(store, Path(tempfile.mkdtemp()), 25.0, False, LIVE).read_text()
+    assert "Stopped until you clear it" in text
+
+    assert resume_live(store) and safety_stop(LIVE, store) == "" and not resume_live(store)
+
+
+def test_trade_kalshi_has_no_record_of_stops_real_betting():
+    store, mm = Store(":memory:"), MarketMaker(fill=None)
+    result = place_live_bet(LIVE, mm, store, "KXMVE-A", 0.5, 5.0, sleep=NO_SLEEP)
+    assert result["status"] == "bought" and "Kalshi shows no trade" in result["reason"]
+    assert bot_ledger(store)["open"] == 1  # the money is still counted as spent
+    assert "Kalshi shows no trade" in halted(store)
+
+
+def test_paying_more_than_quoted_stops_real_betting():
+    store, mm = Store(":memory:"), MarketMaker(fill_price="0.3500")
+    place_live_bet(LIVE, mm, store, "KXMVE-A", 0.5, 5.0, sleep=NO_SLEEP)
+    assert "paid $0.35 a contract, quoted $0.30" in halted(store)
+
+
+def test_earlier_fills_on_the_same_combo_are_not_mistaken_for_this_trade():
+    old = [{"fill_id": "old", "side": "no", "action": "buy", "count_fp": "1.65", "no_price_dollars": "0.6000"}]
+    store, mm = Store(":memory:"), MarketMaker(old_fills=old)
+    result = place_live_bet(LIVE, mm, store, "KXMVE-A", 0.5, 5.0, sleep=NO_SLEEP)
+    assert result["status"] == "bought" and result["contracts"] == 9 and halted(store) == ""
+
+
+def test_no_bet_when_kalshis_trade_record_cannot_be_read():
+    class NoFills(MarketMaker):
+        def get_fills(self, **params):
+            raise KalshiError("GET /portfolio/fills -> 500")
+
+    store, mm = Store(":memory:"), NoFills()
+    result = place_live_bet(LIVE, mm, store, "KXMVE-A", 0.5, 5.0, sleep=NO_SLEEP)
+    assert result["status"] == "skipped" and mm.rfqs == [] and mm.accepted == []
 
 
 def test_no_trade_when_fresh_price_has_no_edge():
@@ -243,3 +335,19 @@ def test_single_bets_stay_pretend_unless_switched_on(tmp_path):
         assert stats["value_bets"] == 1 and stats["bought"] == 0 and calls == []
     finally:
         value.place_live_single = original
+
+
+def test_quote_bigger_than_the_stake_is_never_accepted():
+    store, mm = Store(":memory:"), MarketMaker(size="16.00")  # 16 x $0.30 + fee is about $5, stake is $1
+    one_dollar = replace(LIVE, live_max_stake=1.0)  # the real first-stage setting
+    result = place_live_bet(one_dollar, mm, store, "KXMVE-A", 0.5, 1.0, sleep=NO_SLEEP)
+    assert result["status"] == "skipped" and "above the $1.00 stake" in result["reason"]
+    assert mm.accepted == [] and mm.deleted == ["rfq1"]
+    assert bot_ledger(store)["open"] == 0
+
+
+def test_quote_without_a_size_is_never_accepted():
+    store, mm = Store(":memory:"), MarketMaker(size=None)
+    result = place_live_bet(LIVE, mm, store, "KXMVE-A", 0.5, 5.0, sleep=NO_SLEEP)
+    assert result["status"] == "skipped" and "does not show its size" in result["reason"]
+    assert mm.accepted == []

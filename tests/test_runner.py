@@ -114,7 +114,7 @@ def test_unpriced_combo_gets_a_price_check(tmp_path, monkeypatch):
     monkeypatch.setattr("tradebot.strategy.quotes.time.sleep", lambda s: None)
     store = _store_with(UNPRICED)
     settings = Settings(log_dir=tmp_path, kalshi_api_key_id="k", kalshi_private_key_path="p", builds_per_cycle=0)
-    client = QuotingClient([{"status": "open", "yes_bid_dollars": "0.0400", "no_bid_dollars": "0"}])
+    client = QuotingClient([{"status": "open", "yes_bid_dollars": "0", "no_bid_dollars": "0.9600"}])
     stats = evaluate_combos(settings, client, store, balance=50, lifetime_profit=0)
     assert client.rfqs == ["KXMVE-UNPRICED"]
     assert stats["price_checks"] == 1 and stats["quotes_received"] == 1 and stats["would_buy"] == 1
@@ -124,6 +124,19 @@ def test_unpriced_combo_gets_a_price_check(tmp_path, monkeypatch):
     assert kinds == ["pick", "watch"]
     # Not re-checked within a day.
     assert evaluate_combos(settings, client, store, 50, 0)["price_checks"] == 0
+
+
+def test_a_quote_that_only_buys_yes_is_not_a_price(tmp_path, monkeypatch):
+    monkeypatch.setattr("tradebot.strategy.quotes.time.sleep", lambda s: None)
+    store = _store_with(UNPRICED)
+    settings = Settings(log_dir=tmp_path, kalshi_api_key_id="k", kalshi_private_key_path="p", builds_per_cycle=0)
+    # The maker will pay $0.04 for YES. The old code read that as "YES costs $0.04".
+    client = QuotingClient([{"status": "open", "yes_bid_dollars": "0.0400", "no_bid_dollars": "0"}])
+    stats = evaluate_combos(settings, client, store, balance=50, lifetime_profit=0)
+    assert stats["price_checks"] == 1 and stats["quotes_received"] == 0 and stats["would_buy"] == 0
+    [check] = store.decisions_since("2000-01-01")
+    assert check["action"] == "price_check" and check["price"] is None and "none sells YES" in check["reason"]
+    assert store.count("paper_bets") == 0
 
 
 def test_no_price_checks_without_credentials(tmp_path):
@@ -151,6 +164,6 @@ def test_busy_combo_is_skipped_without_using_the_check(tmp_path, monkeypatch):
           "raw": second}]
     )
     settings = Settings(log_dir=tmp_path, kalshi_api_key_id="k", kalshi_private_key_path="p", builds_per_cycle=0)
-    client = BusyThenQuotingClient([{"status": "open", "yes_bid_dollars": "0.0400", "no_bid_dollars": "0"}])
+    client = BusyThenQuotingClient([{"status": "open", "yes_bid_dollars": "0", "no_bid_dollars": "0.9600"}])
     stats = evaluate_combos(settings, client, store, balance=50, lifetime_profit=0)
     assert len(client.rfqs) == 2 and stats["price_checks"] == 1 and stats["quotes_received"] == 1

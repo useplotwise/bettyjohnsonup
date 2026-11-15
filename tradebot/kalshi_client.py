@@ -224,8 +224,12 @@ class KalshiClient:
 
     # -- buying (signed, spends real money) --------------------------------
 
-    def accept_quote(self, rfq_id: str, quote_id: str, side: str = "yes") -> None:
-        """Accept a market maker's quote. This is a real trade once the maker confirms."""
+    def accept_quote(self, rfq_id: str, quote_id: str, side: str) -> None:
+        """Accept one side of a market maker's quote. A real trade once the maker confirms.
+
+        `side` names the maker's bid we hit, so we end up with the OPPOSITE
+        contract: accepting "no" buys YES, accepting "yes" buys NO.
+        """
         self.request(
             "PUT",
             f"/communications/rfqs/{rfq_id}/quotes/{quote_id}/accept",

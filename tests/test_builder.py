@@ -41,9 +41,9 @@ def test_choose_legs_uses_one_leg_per_event():
 
 
 class BuilderClient:
-    def __init__(self, quote_yes_bid="0.5000"):
+    def __init__(self, yes_price=0.50):
         self.created, self.rfqs = [], []
-        self.quote_yes_bid = quote_yes_bid
+        self.yes_price = yes_price
 
     def get_collection(self, ticker):
         return {"collection_ticker": ticker, "associated_event_tickers": sorted(ELIGIBLE), "size_min": 2}
@@ -57,7 +57,8 @@ class BuilderClient:
         return "rfq1"
 
     def get_rfq_quotes(self, rfq_id):
-        return [{"status": "open", "yes_bid_dollars": self.quote_yes_bid, "no_bid_dollars": "0"}]
+        # Selling YES at yes_price means bidding 1 - yes_price for NO.
+        return [{"status": "open", "yes_bid_dollars": "0", "no_bid_dollars": f"{1 - self.yes_price:.4f}"}]
 
     def delete_rfq(self, rfq_id):
         pass
@@ -100,7 +101,7 @@ def test_build_creates_prices_and_paper_trades(tmp_path, monkeypatch):
 
 def test_cheap_built_combo_becomes_a_pick(tmp_path, monkeypatch):
     monkeypatch.setattr("tradebot.strategy.quotes.time.sleep", lambda s: None)
-    store, client = _store(), BuilderClient(quote_yes_bid="0.3000")
+    store, client = _store(), BuilderClient(yes_price=0.30)
     stats = evaluate_combos(_settings(tmp_path, rfq_checks_per_cycle=0), client, store, 50, 0)
     assert stats["combos_built"] == 1 and stats["built_quoted"] == 1 and stats["would_buy"] == 1
 
