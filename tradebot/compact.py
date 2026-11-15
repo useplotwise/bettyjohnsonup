@@ -95,6 +95,10 @@ def _copy(db_path: Path, new_path: Path, lean: bool) -> dict:
             "INSERT INTO main.markets SELECT * FROM old.markets "
             "WHERE ticker IN (SELECT ticker FROM old.paper_bets WHERE status = 'open')"
         )
+    # Carry over which one-time repairs the old file has had (see Store._migrate),
+    # so they run on the copy if they haven't yet, and never twice.
+    version = conn.execute("PRAGMA old.user_version").fetchone()[0]
+    conn.execute(f"PRAGMA main.user_version = {int(version)}")
     counts = {t: conn.execute(f"SELECT COUNT(*) FROM main.{t}").fetchone()[0]
               for t in ("paper_bets", "decisions", "markets")}
     conn.execute("DETACH DATABASE old")

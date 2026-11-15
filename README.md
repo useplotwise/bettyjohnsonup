@@ -55,8 +55,11 @@ Each cycle the bot:
    product of its legs' market prices (settled legs count as certain). Combos
    have no listed price, so for `RFQ_CHECKS_PER_CYCLE` of them the bot sends a
    request for quote, reads market makers' replies for 10 seconds and withdraws
-   the request without accepting (no money moves). Edge is expected profit per
-   $1 at the best quote, after Kalshi's fee.
+   the request without accepting (no money moves). A quote holds the maker's
+   own bids: `yes_bid` is what the maker pays for YES and `no_bid` what it pays
+   for NO. Buying YES means accepting the maker's NO bid and costs
+   `1 - no_bid`; a quote with `no_bid` 0 does not sell YES at all. Edge is
+   expected profit per $1 at the best YES price, after Kalshi's fee.
 2. Sizes any combo with edge of at least `MIN_EDGE` (see `tradebot/bankroll.py`):
    $2 to $5 to start, growing with lifetime profit up to $20; more only with an
    85%+ win chance and at most half the profit buffer; over $500 needs approval.
@@ -109,9 +112,14 @@ LIVE_SINGLES=false        # only combo picks go live; single game bets stay pret
 ```
 
 Then `systemctl restart tradebot`. For each pick, the bot gets a fresh quote for
-the stake, accepts it only if it still clears `MIN_EDGE`, waits for the market
-maker to confirm, and records the price actually filled. Bets over $500 are
-never placed automatically. Cash-outs are still recommendations only (logged as
+the stake, accepts it only if it sells YES, still clears `MIN_EDGE` and costs no
+more than the stake, waits for the market maker to confirm, and then reads
+Kalshi's own record of the trade (the fills). The bet is recorded with the side
+and price Kalshi reports. If that is anything other than "bought YES at about
+the quoted price", or Kalshi shows no trade, all real betting halts and the
+scorecard says why. After someone has checked, clear the halt with
+`sudo -u tradebot python3 -m tradebot.resume_live` (run in the bot's folder).
+Bets over $500 are never placed automatically. Cash-outs are still recommendations only (logged as
 `would_sell`); the bot does not sell positions yet. To stop real betting, set
 `DRY_RUN=true` and restart.
 

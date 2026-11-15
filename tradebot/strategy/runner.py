@@ -66,6 +66,14 @@ def _num(d: dict, *names: str) -> float | None:
     return None
 
 
+def _quote_reason(best, seen: list, legs: int) -> str:
+    if best is not None:
+        return f"best quote of {legs}-leg combo"
+    if seen:
+        return f"{len(seen)} quote(s), but none sells YES (makers only offered to buy it)"
+    return "no quotes"
+
+
 def evaluate_combos(
     settings: Settings,
     client: KalshiClient,
@@ -100,8 +108,9 @@ def evaluate_combos(
             break
         if store.recent_decision(ev.ticker, "price_check", day_ago):
             continue
+        seen: list = []
         try:
-            best = request_combo_price(client, ev.ticker, settings.start_max_stake)
+            best = request_combo_price(client, ev.ticker, settings.start_max_stake, seen=seen)
         except KalshiError as exc:
             # 409: a request is already open on this combo (e.g. another run of
             # the bot); move on to the next one without using up the check.
@@ -126,8 +135,8 @@ def evaluate_combos(
                 "price": ev.ask,
                 "edge": ev.edge,
                 "dry_run": settings.dry_run,
-                "reason": "no quotes" if best is None else f"best quote of {len(ev.legs)}-leg combo",
-                "raw": {"legs": ev.legs, "quote": best[1] if best else None},
+                "reason": _quote_reason(best, seen, len(ev.legs)),
+                "raw": {"legs": ev.legs, "quote": best[1] if best else (seen[0] if seen else None)},
             }
         )
         log.info(

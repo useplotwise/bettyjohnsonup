@@ -8,10 +8,14 @@ each pick the bot would make, it:
 2. Checks the daily limit (MAX_LIVE_BETS_PER_DAY) and caps the stake at
    LIVE_MAX_STAKE ($1 by default, for the first test stage).
 3. Asks market makers for a fresh price for exactly the stake.
-4. Accepts the best quote only if it still clears MIN_EDGE at that price.
-5. Waits for the maker to confirm, then records the bet (kind "live" in the
-   paper_bets table, so it settles the same way) using the price actually
-   filled, read from Kalshi's fills.
+4. Accepts the best quote only if it sells YES, still clears MIN_EDGE at that
+   price, and costs no more than the stake.
+5. Waits for the maker to confirm, then reads Kalshi's own record of the trade
+   (the fills) and records the bet (kind "live" in the paper_bets table, so it
+   settles the same way) with the side and price Kalshi reports.
+6. If Kalshi reports anything other than "bought YES at about the quoted
+   price", or the trade can't be found, ALL real betting stops until a person
+   has looked (see halt_live and `python -m tradebot.resume_live`).
 
 Bets over the approval limit are never placed; they stay "needs_approval".
 """
@@ -28,13 +32,16 @@ from .paper import open_paper_bet
 from .pricing import kalshi_fee, quotes
 from .storage import Store, utcnow
 from .strategy.combos import edge_at
-from .strategy.quotes import best_yes_quote
+from .strategy.quotes import YES_ACCEPT_SIDE, best_yes_quote, yes_size
 
 log = logging.getLogger(__name__)
 
 WAIT_FOR_QUOTES = 10.0
 WAIT_FOR_CONFIRM = 12.0
+WAIT_FOR_FILLS = 10.0
 POLL_EVERY = 2.0
+# A fill this much above the quoted price counts as "not what we agreed to".
+PRICE_TOLERANCE = 0.011
 
 
 def live_enabled(settings: Settings) -> bool:
@@ -68,8 +75,36 @@ def real_pnl_today(store: Store) -> float:
     return round(row[0], 2)
 
 
+def halted(store: Store) -> str:
+    """Why real betting was halted by a check on a finished trade, or "" when it isn't."""
+    row = store.conn.execute(
+        "SELECT action, reason FROM decisions WHERE kind = 'safety' "
+        "AND action IN ('live_halt', 'live_resume') ORDER BY id DESC LIMIT 1"
+    ).fetchone()
+    return (row["reason"] or "a trade did not check out") if row and row["action"] == "live_halt" else ""
+
+
+def halt_live(store: Store, ticker: str, reason: str) -> None:
+    """Stop all real betting until a person clears it with `python -m tradebot.resume_live`."""
+    store.add_decision({"kind": "safety", "ticker": ticker, "action": "live_halt",
+                        "dry_run": False, "reason": reason})
+    log.error("REAL BETTING HALTED after %s: %s", ticker, reason)
+
+
+def resume_live(store: Store) -> bool:
+    """Clear a halt. Returns False if there was nothing to clear."""
+    if not halted(store):
+        return False
+    store.add_decision({"kind": "safety", "ticker": "-", "action": "live_resume",
+                        "dry_run": False, "reason": "halt cleared by hand"})
+    return True
+
+
 def safety_stop(settings: Settings, store: Store) -> str:
-    """Why real betting is paused by a loss stop, or "" when it isn't."""
+    """Why real betting is stopped or paused, or "" when it isn't."""
+    reason = halted(store)
+    if reason:
+        return f"stopped until you clear it: {reason}"
     bankroll = settings.bot_bankroll
     profit = bot_ledger(store)["profit"]
     if settings.max_drawdown_fraction > 0 and profit <= -settings.max_drawdown_fraction * bankroll:
@@ -110,9 +145,66 @@ def _fills(client: KalshiClient, side: str = "yes", action: str = "buy", **param
     return total, (round(cost / total, 4) if total else None)
 
 
-def _filled_price(client: KalshiClient, ticker: str) -> float | None:
-    """Average YES price we actually paid on this combo, from Kalshi's fills."""
-    return _fills(client, "yes", ticker=ticker)[1]
+def _fill_id(fill: dict) -> str:
+    return str(fill.get("fill_id") or fill.get("trade_id") or sorted(fill.items()))
+
+
+def _fill_price(fill: dict, side: str) -> float | None:
+    if fill.get(f"{side}_price_dollars") not in (None, ""):
+        return float(fill[f"{side}_price_dollars"])
+    if fill.get(f"{side}_price") not in (None, ""):
+        return float(fill[f"{side}_price"]) / 100
+    return None
+
+
+def _fill_ids(client: KalshiClient, ticker: str) -> set[str] | None:
+    """Ids of every fill Kalshi already has on this market, or None if they can't be read."""
+    try:
+        return {_fill_id(f) for f in client.get_fills(ticker=ticker).get("fills", [])}
+    except KalshiError as exc:
+        log.warning("could not read fills for %s: %s", ticker, exc)
+        return None
+
+
+def _new_fills(client: KalshiClient, ticker: str, before: set[str]) -> list[dict]:
+    """What Kalshi says we traded on this market since `before`: side, action, count, price."""
+    try:
+        fills = client.get_fills(ticker=ticker).get("fills", [])
+    except KalshiError as exc:
+        log.warning("could not read fills for %s: %s", ticker, exc)
+        return []
+    found = []
+    for f in fills:
+        if _fill_id(f) in before:
+            continue
+        side = (f.get("side") or "").lower()
+        price = _fill_price(f, side)
+        if price is None and side in ("yes", "no"):  # Kalshi usually gives both; one implies the other
+            other = _fill_price(f, "no" if side == "yes" else "yes")
+            price = None if other is None else round(1 - other, 4)
+        found.append({"side": side, "action": (f.get("action") or "").lower(),
+                      "count": float(f.get("count_fp") or f.get("count") or 0), "price": price})
+    return found
+
+
+def _check_fills(fills: list[dict], quoted_cost: float) -> tuple[str, float, float | None, str]:
+    """(side, contracts, average price, what is wrong or "") for the fills of one accepted quote."""
+    if not fills:
+        return "yes", 0.0, None, "Kalshi shows no trade for a quote the maker confirmed"
+    sides = {(f["side"], f["action"]) for f in fills}
+    side = fills[0]["side"] or "yes"
+    contracts = sum(f["count"] for f in fills if f["side"] == side)
+    priced = [f for f in fills if f["side"] == side and f["price"] is not None]
+    price = round(sum(f["count"] * f["price"] for f in priced) / sum(f["count"] for f in priced), 4) \
+        if priced and sum(f["count"] for f in priced) else None
+    if sides != {("yes", "buy")}:
+        got = ", ".join(sorted(f"{a or '?'} {sd.upper() or '?'}" for sd, a in sides))
+        return side, contracts, price, f"meant to buy YES but Kalshi says: {got}"
+    if price is None:
+        return side, contracts, price, "Kalshi's record of the trade has no price"
+    if price > quoted_cost + PRICE_TOLERANCE:
+        return side, contracts, price, f"paid ${price:.2f} a contract, quoted ${quoted_cost:.2f}"
+    return side, contracts, price, ""
 
 
 def _money_check(settings: Settings, store: Store, stake: float) -> tuple[float, str]:
@@ -259,22 +351,6 @@ def _close_sold(store: Store, row, filled: int, price: float) -> None:
             )
 
 
-SIZE_FIELDS = ("yes_contracts_fp", "contracts_fp", "yes_contracts", "contracts", "count_fp", "count")
-
-
-def quote_size(quote: dict) -> float | None:
-    """How many YES contracts a quote covers, or None if the quote doesn't say."""
-    for name in SIZE_FIELDS:
-        value = quote.get(name)
-        if value not in (None, ""):
-            try:
-                size = float(value)
-            except (TypeError, ValueError):
-                continue
-            return size if size > 0 else None
-    return None
-
-
 def place_live_bet(
     settings: Settings,
     client: KalshiClient,
@@ -295,6 +371,13 @@ def place_live_bet(
         _record(settings, store, ticker, fair_prob, result, legs)
         return result
 
+    # Kalshi's record of the trade is checked afterwards, so it must be readable first.
+    before = _fill_ids(client, ticker)
+    if before is None:
+        result["reason"] = "can't read Kalshi's trade record, so not betting"
+        _record(settings, store, ticker, fair_prob, result, legs)
+        return result
+
     rfq_id = client.create_rfq(ticker, stake)
     try:
         best, waited = None, 0.0
@@ -303,7 +386,7 @@ def place_live_bet(
             waited += POLL_EVERY
             best = best_yes_quote(client.get_rfq_quotes(rfq_id)) or best
         if best is None:
-            result["reason"] = "no quotes"
+            result["reason"] = "no quote that sells YES"
             return result
         cost, quote = best
         log.info("LIVE quote for %s: %s", ticker, quote)
@@ -313,33 +396,45 @@ def place_live_bet(
             return result
 
         # Accepting fills whatever the maker quoted, so check its size first. A quote
-        # that doesn't show its size, or covers more than the stake, is never accepted.
-        size = quote_size(quote)
+        # that doesn't show its size, or costs more than the stake, is never accepted.
+        size = yes_size(quote)
         if size is None:
             result["reason"] = "quote does not show its size, not accepting"
             return result
         quoted_total = size * cost + kalshi_fee(cost, size)
         if quoted_total > stake + 0.005:
-            result["reason"] = f"quote covers ${quoted_total:.2f}, above the ${stake:.2f} stake"
+            result["reason"] = f"quote costs ${quoted_total:.2f}, above the ${stake:.2f} stake"
             return result
 
-        client.accept_quote(rfq_id, quote["id"], "yes")
+        client.accept_quote(rfq_id, quote["id"], YES_ACCEPT_SIDE)
         status, waited = "accepted", 0.0
         while waited < WAIT_FOR_CONFIRM and status not in ("executed", "cancelled"):
             sleep(POLL_EVERY)
             waited += POLL_EVERY
             quote = client.get_quote(rfq_id, quote["id"]) or quote
             status = quote.get("status", status)
-        if status != "executed":
+        fills = _new_fills(client, ticker, before)
+        if status != "executed" and not fills:
             result["reason"] = f"maker did not confirm (status {status})"
             return result
 
-        contracts = float(quote.get("yes_contracts_fp") or quote.get("contracts_fp") or 0)
-        price = _filled_price(client, ticker) or cost
+        # The trade happened. Believe Kalshi's record of it, not the quote.
+        waited = 0.0
+        while not fills and waited < WAIT_FOR_FILLS:
+            sleep(POLL_EVERY)
+            waited += POLL_EVERY
+            fills = _new_fills(client, ticker, before)
+        side, contracts, price, problem = _check_fills(fills, cost)
+        contracts, price = contracts or size, price if price is not None else cost
+        won_prob = fair_prob if side == "yes" else 1 - fair_prob
         result.update(status="bought", price=price, contracts=contracts,
-                      reason=f"bought {contracts:g} at ${price:.2f}, fair chance {fair_prob:.1%}")
-        open_paper_bet(store, "live", ticker, "yes", price, contracts, fair_prob, edge_at(fair_prob, price),
-                       {"legs": legs or [], "quote_id": quote["id"], "quoted_cost": cost})
+                      reason=f"bought {contracts:g} {side.upper()} at ${price:.2f}, fair chance {won_prob:.1%}")
+        open_paper_bet(store, "live", ticker, side, price, contracts, won_prob, edge_at(won_prob, price),
+                       {"legs": legs or [], "quote_id": quote["id"], "quoted_cost": cost,
+                        "side_from_fills": bool(fills), **({"problem": problem} if problem else {})})
+        if problem:
+            result["reason"] += f". PROBLEM: {problem}"
+            halt_live(store, ticker, problem)
         return result
     finally:
         try:

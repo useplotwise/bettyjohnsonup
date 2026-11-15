@@ -7,6 +7,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Iterable
 
+from .pricing import kalshi_fee
+
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS markets (
     ticker TEXT PRIMARY KEY,
@@ -113,6 +115,73 @@ def utcnow() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+COMBO_PAPER_KINDS = ("pick", "watch", "built")
+
+
+def fix_backwards_combo_bets(conn: sqlite3.Connection) -> dict:
+    """Repair records made while the bot read market makers' quotes backwards.
+
+    Until Nov 2026 the bot took a maker's bid to BUY YES as the price to buy
+    YES, and accepted that side of the quote, which buys NO (see
+    strategy/quotes.py). Two repairs, safe to run more than once:
+
+    - Real combo bets are rewritten to what Kalshi's fills show: NO at
+      1 - the recorded price, same contracts. Finished ones flip won/lost.
+    - Pretend combo bets are kept only if their price matches a stored quote
+      that really sold YES (1 - no_bid). The rest are renamed "<kind>_old" so
+      they stop counting; open ones are closed as "retired".
+    """
+    fixed = {"real_bets_corrected": 0, "pretend_bets_retired": 0, "pretend_bets_kept": 0}
+
+    for row in conn.execute("SELECT * FROM paper_bets WHERE kind = 'live' AND side = 'yes'").fetchall():
+        raw = json.loads(row["raw"]) if row["raw"] else {}
+        if raw.get("single") or "quote_id" not in raw or "corrected" in raw or "side_from_fills" in raw:
+            continue  # not a combo bet from the backwards era, or already repaired
+        price, contracts = round(1 - row["price"], 4), row["contracts"]
+        fee = kalshi_fee(price, contracts)
+        cost = price * contracts + fee
+        status = {"won": "lost", "lost": "won"}.get(row["status"], row["status"])
+        pnl = {"won": round(contracts - cost, 2), "lost": round(-cost, 2), "void": 0.0}.get(status)
+        raw["corrected"] = f"first recorded as YES at {row['price']:.4f}; Kalshi's fills show NO at {price:.4f}"
+        conn.execute(
+            "UPDATE paper_bets SET side = 'no', price = ?, fee = ?, status = ?, pnl = ?, win_prob = ?, "
+            "edge = NULL, raw = ? WHERE id = ?",
+            (price, fee, status, pnl, None if row["win_prob"] is None else round(1 - row["win_prob"], 4),
+             json.dumps(raw), row["id"]),
+        )
+        fixed["real_bets_corrected"] += 1
+
+    marks = ", ".join("?" * len(COMBO_PAPER_KINDS))
+    bets = conn.execute(
+        f"SELECT id, ticker, price, status FROM paper_bets WHERE kind IN ({marks})", COMBO_PAPER_KINDS
+    ).fetchall()
+    if bets:
+        # Every YES price a maker really offered, by combo, from the stored quotes.
+        offered: dict[str, list[float]] = {}
+        for ticker, raw in conn.execute(
+            "SELECT ticker, raw FROM decisions WHERE action IN ('price_check', 'built_combo') "
+            "AND raw LIKE '%no_bid%'"
+        ):
+            quote = (json.loads(raw) or {}).get("quote") or {}
+            try:
+                no_bid = float(quote.get("no_bid_dollars") or quote.get("no_bid") or 0)
+            except (TypeError, ValueError):
+                continue
+            if 0 < no_bid < 1:
+                offered.setdefault(ticker, []).append(1 - no_bid)
+        for bet in bets:
+            if any(abs(bet["price"] - cost) < 0.00011 for cost in offered.get(bet["ticker"], ())):
+                fixed["pretend_bets_kept"] += 1
+                continue
+            conn.execute(
+                "UPDATE paper_bets SET kind = kind || '_old', "
+                "status = CASE WHEN status = 'open' THEN 'retired' ELSE status END WHERE id = ?",
+                (bet["id"],),
+            )
+            fixed["pretend_bets_retired"] += 1
+    return fixed
+
+
 class Store:
     def __init__(self, path: Path | str):
         if str(path) != ":memory:":
@@ -120,6 +189,17 @@ class Store:
         self.conn = sqlite3.connect(str(path))
         self.conn.row_factory = sqlite3.Row
         self.conn.executescript(SCHEMA)
+        self._migrate()
+
+    def _migrate(self) -> None:
+        """One-time repairs to old records, tracked by SQLite's user_version."""
+        version = self.conn.execute("PRAGMA user_version").fetchone()[0]
+        if version < 1:
+            with self.conn:
+                fixed = fix_backwards_combo_bets(self.conn)
+                self.conn.execute("PRAGMA user_version = 1")
+            if any(fixed.values()):
+                log.warning("repaired combo records that were priced backwards: %s", fixed)
 
     def close(self) -> None:
         self.conn.close()

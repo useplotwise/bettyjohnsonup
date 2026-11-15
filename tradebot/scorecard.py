@@ -44,14 +44,27 @@ def _paper_lines(store: Store) -> list[str]:
         f"Pretend profit/loss: ${today['pnl']:+.2f} on ${today['staked']:.2f} staked.",
         f"- Old single bets (retired: that version also bet games already under way): {old['settled']} finished, "
         f"{old['won']} won, pretend profit/loss ${old['pnl']:+.2f}.",
-        "",
-    ] + _cashout_lines(store) + _built_by_legs(store)
+    ] + _retired_combo_lines(store) + [""] + _cashout_lines(store) + _built_by_legs(store)
+
+
+def _retired_combo_lines(store: Store) -> list[str]:
+    count = store.conn.execute(
+        "SELECT COUNT(*) FROM paper_bets WHERE kind IN ('pick_old', 'watch_old', 'built_old')"
+    ).fetchone()[0]
+    if not count:
+        return []
+    return [
+        f"- Old combo bets set aside: {count}. They were priced with market makers' offers read backwards "
+        f"(the price they would pay for YES, not the price they sell it at), so their profit was never real. "
+        f"The combo numbers above only count bets priced the right way.",
+    ]
 
 
 def _cashout_lines(store: Store) -> list[str]:
     rows = store.conn.execute(
         "SELECT status, price, contracts, fee, pnl, json_extract(raw, '$.cashout.proceeds') AS proceeds "
-        "FROM paper_bets WHERE json_extract(raw, '$.cashout.proceeds') IS NOT NULL AND kind != 'live'"
+        "FROM paper_bets WHERE json_extract(raw, '$.cashout.proceeds') IS NOT NULL AND kind != 'live' "
+        "AND kind NOT LIKE '%_old'"
     ).fetchall()
     done = [r for r in rows if r["status"] in ("won", "lost")]
     sold = sum(r["proceeds"] - (r["price"] * r["contracts"] + r["fee"]) for r in done)
@@ -163,7 +176,7 @@ def write_scorecard(
         f"- Bets the bot would place: {counts['would_buy']} "
         f"(total ${sum(r['stake'] or 0 for r in buys):.2f})",
         f"- Combo prices requested from market makers: {counts['price_check']} "
-        f"({sum(1 for r in rows if r['action'] == 'price_check' and r['price'])} got a quote)",
+        f"({sum(1 for r in rows if r['action'] == 'price_check' and r['price'])} came back with a price to buy YES)",
         f"- Waiting for your approval (over $500): {counts['needs_approval']}",
         f"- Cash-outs it would make: {counts['would_sell']}",
         f"- Real bets placed today: {counts['bought']} (skipped: {counts['live_skipped']})",
