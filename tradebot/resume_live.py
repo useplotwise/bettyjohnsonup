@@ -1,4 +1,4 @@
-"""Clear a halt on real betting: `python -m tradebot.resume_live`.
+"""Clear a halt on real betting: `sudo -u tradebot .venv/bin/python -m tradebot.resume_live` in the bot's folder.
 
 The bot halts all real betting when Kalshi's record of a trade doesn't match
 what the bot meant to do (wrong side, worse price, or no trade found). Run

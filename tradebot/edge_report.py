@@ -1,6 +1,6 @@
 """Where, if anywhere, do the bot's pretend bets really win?
 
-    sudo -u tradebot python3 -m tradebot.edge_report
+    sudo -u tradebot .venv/bin/python -m tradebot.edge_report
 
 Read-only. Sorts every finished pretend bet into groups (by price, number of
 legs, sport, and so on) and shows, for each group, what betting $1 on every
