@@ -259,6 +259,22 @@ def _close_sold(store: Store, row, filled: int, price: float) -> None:
             )
 
 
+SIZE_FIELDS = ("yes_contracts_fp", "contracts_fp", "yes_contracts", "contracts", "count_fp", "count")
+
+
+def quote_size(quote: dict) -> float | None:
+    """How many YES contracts a quote covers, or None if the quote doesn't say."""
+    for name in SIZE_FIELDS:
+        value = quote.get(name)
+        if value not in (None, ""):
+            try:
+                size = float(value)
+            except (TypeError, ValueError):
+                continue
+            return size if size > 0 else None
+    return None
+
+
 def place_live_bet(
     settings: Settings,
     client: KalshiClient,
@@ -290,9 +306,21 @@ def place_live_bet(
             result["reason"] = "no quotes"
             return result
         cost, quote = best
+        log.info("LIVE quote for %s: %s", ticker, quote)
         edge = edge_at(fair_prob, cost)
         if edge < settings.min_edge:
             result["reason"] = f"fresh price {cost:.2f} leaves edge {edge:.0%}, below {settings.min_edge:.0%}"
+            return result
+
+        # Accepting fills whatever the maker quoted, so check its size first. A quote
+        # that doesn't show its size, or covers more than the stake, is never accepted.
+        size = quote_size(quote)
+        if size is None:
+            result["reason"] = "quote does not show its size, not accepting"
+            return result
+        quoted_total = size * cost + kalshi_fee(cost, size)
+        if quoted_total > stake + 0.005:
+            result["reason"] = f"quote covers ${quoted_total:.2f}, above the ${stake:.2f} stake"
             return result
 
         client.accept_quote(rfq_id, quote["id"], "yes")

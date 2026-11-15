@@ -15,8 +15,8 @@ NO_SLEEP = lambda s: None  # noqa: E731
 class MarketMaker:
     """Fake Kalshi: quotes YES at `price`, confirms (or not) when accepted."""
 
-    def __init__(self, price="0.3000", confirm=True, fill_price="0.2900"):
-        self.price, self.confirm, self.fill_price = price, confirm, fill_price
+    def __init__(self, price="0.3000", confirm=True, fill_price="0.2900", size="9.00"):
+        self.price, self.confirm, self.fill_price, self.size = price, confirm, fill_price, size
         self.accepted, self.deleted, self.rfqs = [], [], []
 
     def create_rfq(self, ticker, target):
@@ -24,7 +24,10 @@ class MarketMaker:
         return "rfq1"
 
     def get_rfq_quotes(self, rfq_id):
-        return [{"id": "q1", "status": "open", "yes_bid_dollars": self.price, "no_bid_dollars": "0"}]
+        quote = {"id": "q1", "status": "open", "yes_bid_dollars": self.price, "no_bid_dollars": "0"}
+        if self.size is not None:
+            quote["yes_contracts_fp"] = self.size
+        return [quote]
 
     def accept_quote(self, rfq_id, quote_id, side):
         self.accepted.append((rfq_id, quote_id, side))
@@ -243,3 +246,19 @@ def test_single_bets_stay_pretend_unless_switched_on(tmp_path):
         assert stats["value_bets"] == 1 and stats["bought"] == 0 and calls == []
     finally:
         value.place_live_single = original
+
+
+def test_quote_bigger_than_the_stake_is_never_accepted():
+    store, mm = Store(":memory:"), MarketMaker(size="16.00")  # 16 x $0.30 + fee is about $5, stake is $1
+    one_dollar = replace(LIVE, live_max_stake=1.0)  # the real first-stage setting
+    result = place_live_bet(one_dollar, mm, store, "KXMVE-A", 0.5, 1.0, sleep=NO_SLEEP)
+    assert result["status"] == "skipped" and "above the $1.00 stake" in result["reason"]
+    assert mm.accepted == [] and mm.deleted == ["rfq1"]
+    assert bot_ledger(store)["open"] == 0
+
+
+def test_quote_without_a_size_is_never_accepted():
+    store, mm = Store(":memory:"), MarketMaker(size=None)
+    result = place_live_bet(LIVE, mm, store, "KXMVE-A", 0.5, 5.0, sleep=NO_SLEEP)
+    assert result["status"] == "skipped" and "does not show its size" in result["reason"]
+    assert mm.accepted == []
